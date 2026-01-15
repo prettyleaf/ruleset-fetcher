@@ -9,6 +9,10 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+VERSION="1.0.1"
+GITHUB_REPO="prettyleaf/ruleset-fetcher"
+GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main/ruleset-fetcher.sh"
+
 CONFIG_DIR="/opt/ruleset-fetcher"
 CONFIG_FILE="${CONFIG_DIR}/config.conf"
 URLS_FILE="${CONFIG_DIR}/urls.txt"
@@ -23,6 +27,8 @@ print_banner() {
     echo '| |  | |_| | |  __/\__ \  __/ |_  |  _|  __/ || (__| | | |  __/ |   '
     echo '|_|   \__,_|_|\___||___/\___|\__| |_|  \___|\__\___|_| |_|\___|_|   '
     echo -e "${NC}"
+    echo -e "                                              ${BLUE}v${VERSION}${NC}"
+    echo ""
 }
 
 log_message() {
@@ -671,6 +677,9 @@ show_help() {
     echo "  --test-telegram   Send a test Telegram notification"
     echo "  --enable-timer    Enable auto-update timer"
     echo "  --disable-timer   Disable auto-update timer"
+    echo "  --check-update    Check for script updates"
+    echo "  --self-update     Update script to latest version"
+    echo "  --version, -v     Show version information"
     echo "  --uninstall       Remove all configuration and timers"
     echo "  --help, -h        Show this help message"
     echo ""
@@ -678,6 +687,7 @@ show_help() {
     echo "  sudo $(basename "$0") --setup       # Initial setup"
     echo "  sudo $(basename "$0") --update      # Force update now"
     echo "  sudo $(basename "$0") --add-url     # Add new file URL"
+    echo "  sudo $(basename "$0") --self-update # Update script"
     echo ""
     echo "Configuration files:"
     echo "  ${CONFIG_FILE}"
@@ -794,6 +804,16 @@ main() {
         --uninstall)
             check_root
             uninstall
+            ;;
+        --check-update)
+            check_for_updates
+            ;;
+        --self-update)
+            check_root
+            self_update
+            ;;
+        --version|-v)
+            show_version
             ;;
         --help|-h)
             show_help

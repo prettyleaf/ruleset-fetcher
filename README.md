@@ -36,6 +36,9 @@ sudo ruleset-fetcher --setup
 | `--test-telegram` | Send a test Telegram notification |
 | `--enable-timer` | Enable auto-update timer |
 | `--disable-timer` | Disable auto-update timer |
+| `--check-update` | Check for script updates |
+| `--self-update` | Update script to latest version |
+| `--version`, `-v` | Show version information |
 | `--uninstall` | Remove all configuration and timers |
 | `--help`, `-h` | Show help message |
 

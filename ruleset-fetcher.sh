@@ -1,15 +1,6 @@
 #!/bin/bash
 
-set -e
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-
-VERSION="1.0.1"
+VERSION="1.0.2"
 GITHUB_REPO="prettyleaf/ruleset-fetcher"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main/ruleset-fetcher.sh"
 
@@ -18,6 +9,30 @@ CONFIG_FILE="${CONFIG_DIR}/config.conf"
 URLS_FILE="${CONFIG_DIR}/urls.txt"
 LOG_FILE="${CONFIG_DIR}/ruleset-fetcher.log"
 SCRIPT_PATH="/usr/local/bin/ruleset-fetcher"
+SYMLINK_PATH="/usr/local/bin/rfetcher"
+
+# Colors with terminal detection (stdout or stderr)
+if [[ -t 1 || -t 2 ]]; then
+    RED=$'\033[31m'
+    GREEN=$'\033[32m'
+    YELLOW=$'\033[33m'
+    BLUE=$'\033[34m'
+    CYAN=$'\033[36m'
+    GRAY=$'\033[37m'
+    LIGHT_GRAY=$'\033[90m'
+    NC=$'\033[0m'
+    BOLD=$'\033[1m'
+else
+    RED=""
+    GREEN=""
+    YELLOW=""
+    BLUE=""
+    CYAN=""
+    GRAY=""
+    LIGHT_GRAY=""
+    NC=""
+    BOLD=""
+fi
 
 print_banner() {
     echo -e "${CYAN}"
@@ -29,6 +44,35 @@ print_banner() {
     echo -e "${NC}"
     echo -e "                                              ${BLUE}v${VERSION}${NC}"
     echo ""
+}
+
+setup_symlink() {
+    if [[ "$EUID" -ne 0 ]]; then
+        return 1
+    fi
+
+    # Setup main symlink (ruleset-fetcher)
+    if [[ -L "$SCRIPT_PATH" && "$(readlink -f "$SCRIPT_PATH")" == "$(readlink -f "$0")" ]]; then
+        : # Already configured
+    elif [[ -d "$(dirname "$SCRIPT_PATH")" ]]; then
+        rm -f "$SCRIPT_PATH"
+        if [[ "$(readlink -f "$0")" != "${SCRIPT_PATH}" ]]; then
+            cp "$(readlink -f "$0")" "${SCRIPT_PATH}"
+            chmod +x "${SCRIPT_PATH}"
+        fi
+    fi
+
+    # Setup short alias symlink (rfetcher)
+    if [[ -L "$SYMLINK_PATH" && "$(readlink -f "$SYMLINK_PATH")" == "$SCRIPT_PATH" ]]; then
+        : # Already configured
+    elif [[ -d "$(dirname "$SYMLINK_PATH")" ]]; then
+        rm -f "$SYMLINK_PATH"
+        if ln -s "$SCRIPT_PATH" "$SYMLINK_PATH" 2>/dev/null; then
+            : # Symlink created
+        fi
+    fi
+
+    return 0
 }
 
 log_message() {
@@ -290,63 +334,76 @@ download_all_files() {
     return $fail_count
 }
 
-install_systemd_service() {
+# Cron job marker to identify our entries
+CRON_MARKER="# ruleset-fetcher-auto-update"
+
+install_cron_job() {
     local interval_hours="$1"
     
-    cat > /etc/systemd/system/ruleset-fetcher.service << EOF
-[Unit]
-Description=Ruleset Fetcher - Download rule-set files for mihomo
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=${SCRIPT_PATH} --update
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    cat > /etc/systemd/system/ruleset-fetcher.timer << EOF
-[Unit]
-Description=Run Ruleset Fetcher every ${interval_hours} hour(s)
-
-[Timer]
-OnBootSec=5min
-OnUnitActiveSec=${interval_hours}h
-Persistent=true
-RandomizedDelaySec=300
-
-[Install]
-WantedBy=timers.target
-EOF
-
-    systemctl daemon-reload
-    systemctl enable ruleset-fetcher.timer
-    systemctl start ruleset-fetcher.timer
+    # Remove existing cron job if any
+    remove_cron_job 2>/dev/null || true
     
-    print_success "Systemd timer installed and started"
+    # Create cron expression based on interval
+    local cron_expr
+    case "$interval_hours" in
+        1)  cron_expr="0 * * * *" ;;           # Every hour
+        3)  cron_expr="0 */3 * * *" ;;         # Every 3 hours
+        6)  cron_expr="0 */6 * * *" ;;         # Every 6 hours
+        12) cron_expr="0 */12 * * *" ;;        # Every 12 hours
+        24) cron_expr="0 0 * * *" ;;           # Daily at midnight
+        *)  cron_expr="0 */${interval_hours} * * *" ;;  # Custom interval
+    esac
+    
+    # Get existing crontab or start with empty
+    local existing_cron
+    existing_cron=$(crontab -l 2>/dev/null) || existing_cron=""
+    
+    # Add new cron job with marker
+    local new_cron_line="${cron_expr} ${SCRIPT_PATH} --update >/dev/null 2>&1 ${CRON_MARKER}"
+    
+    if [[ -z "$existing_cron" ]]; then
+        echo "$new_cron_line" | crontab -
+    else
+        printf '%s\n%s\n' "$existing_cron" "$new_cron_line" | crontab -
+    fi
+    
+    print_success "Cron job installed"
     print_info "Files will be updated every ${interval_hours} hour(s)"
 }
 
-remove_systemd_service() {
-    systemctl stop ruleset-fetcher.timer 2>/dev/null || true
-    systemctl disable ruleset-fetcher.timer 2>/dev/null || true
-    rm -f /etc/systemd/system/ruleset-fetcher.service
-    rm -f /etc/systemd/system/ruleset-fetcher.timer
-    systemctl daemon-reload
-    print_success "Systemd timer removed"
+remove_cron_job() {
+    local existing_cron
+    existing_cron=$(crontab -l 2>/dev/null) || existing_cron=""
+    
+    if [[ -z "$existing_cron" ]]; then
+        print_info "No crontab exists"
+        return 0
+    fi
+    
+    # Only remove lines with our specific marker
+    local new_cron
+    new_cron=$(echo "$existing_cron" | grep -v "$CRON_MARKER" || true)
+    
+    if [[ -z "$new_cron" ]]; then
+        crontab -r 2>/dev/null || true
+    else
+        echo "$new_cron" | crontab -
+    fi
+    
+    print_success "Cron job removed"
 }
 
-show_timer_status() {
-    if systemctl is-active --quiet ruleset-fetcher.timer; then
-        print_success "Auto-update timer is ACTIVE"
+show_cron_status() {
+    local cron_line
+    cron_line=$(crontab -l 2>/dev/null | grep "$CRON_MARKER" || true)
+    
+    if [[ -n "$cron_line" ]]; then
+        print_success "Auto-update cron job is ACTIVE"
         echo ""
-        systemctl status ruleset-fetcher.timer --no-pager
+        # Show without the marker for cleaner display
+        echo "  Schedule: ${cron_line% $CRON_MARKER}"
     else
-        print_warning "Auto-update timer is NOT active"
+        print_warning "Auto-update cron job is NOT active"
     fi
 }
 
@@ -356,8 +413,11 @@ setup_download_directory() {
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     
-    local default_dir="/opt/ruleset-fetcher"
-    read -p "Enter download directory [${default_dir}]: " input_dir
+    local default_dir="${CONFIG_DIR}"
+    echo -e "Download directory for rule-set files."
+    echo -e "Default: ${BOLD}${default_dir}${NC}"
+    echo ""
+    read -p "Enter download directory [press Enter for default]: " input_dir
     DOWNLOAD_DIR="${input_dir:-$default_dir}"
     
     if [[ ! -d "${DOWNLOAD_DIR}" ]]; then
@@ -377,27 +437,21 @@ setup_urls() {
     echo "Enter the URLs of files to download (one per line)."
     echo "Example: https://github.com/MetaCubeX/meta-rules-dat/raw/meta/geo/geosite/discord.mrs"
     echo ""
-    echo "Press Enter twice when done."
+    echo "Press Enter when done."
     echo ""
     
     URLS=()
-    local empty_count=0
     
     while true; do
-        read -p "URL: " url
+        read -r -p "URL: " url || true
         if [[ -z "$url" ]]; then
-            ((empty_count++))
-            if [[ $empty_count -ge 1 ]]; then
-                break
-            fi
+            break
+        fi
+        if [[ "$url" =~ ^https?:// ]]; then
+            URLS+=("$url")
+            print_success "Added: $(basename "$url")"
         else
-            empty_count=0
-            if [[ "$url" =~ ^https?:// ]]; then
-                URLS+=("$url")
-                print_success "Added: $(basename "$url")"
-            else
-                print_warning "Invalid URL format, skipping: $url"
-            fi
+            print_warning "Invalid URL format, skipping: $url"
         fi
     done
     
@@ -487,18 +541,145 @@ setup_telegram() {
 }
 
 run_setup() {
+    # Respect RF_NO_CLEAR environment variable: if set, skip clearing the terminal before setup.
+    if [[ -t 0 && -z "${RF_NO_CLEAR:-}" ]]; then
+        clear
+    fi
     print_banner
     check_root
     check_dependencies
     create_config_dir
     
     echo ""
-    print_info "Starting interactive setup..."
+    print_info "Starting Setup Wizard..."
+    echo ""
     
+    # Step 1: Download Directory
     setup_download_directory
+    
+    # Step 2: URLs
     setup_urls
+    
+    # Step 3: Review URLs and download
+    if [[ ${#URLS[@]} -gt 0 ]]; then
+        echo ""
+        print_info "Step 3: Review URLs"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        echo "You have added ${#URLS[@]} URL(s):"
+        echo ""
+        local i=1
+        for url in "${URLS[@]}"; do
+            echo "  ${i}) $(basename "$url")"
+            ((i++))
+        done
+        echo ""
+        
+        while true; do
+            read -p "Do you want to modify the list? (y/n) [n]: " modify_urls
+            modify_urls="${modify_urls:-n}"
+            
+            if [[ "$modify_urls" =~ ^[Yy]$ ]]; then
+                echo ""
+                echo "  1) Add more URLs"
+                echo "  2) Remove a URL"
+                echo "  3) Clear all and re-enter"
+                echo "  0) Done editing"
+                echo ""
+                read -p "Select option: " edit_option
+                
+                case "$edit_option" in
+                    1)
+                        echo ""
+                        echo "Enter additional URLs (press Enter twice when done):"
+                        while true; do
+                            read -p "URL: " url
+                            if [[ -z "$url" ]]; then
+                                break
+                            fi
+                            if [[ "$url" =~ ^https?:// ]]; then
+                                URLS+=("$url")
+                                print_success "Added: $(basename "$url")"
+                            else
+                                print_warning "Invalid URL format, skipping"
+                            fi
+                        done
+                        ;;
+                    2)
+                        if [[ ${#URLS[@]} -eq 0 ]]; then
+                            print_warning "No URLs to remove"
+                        else
+                            echo ""
+                            local j=1
+                            for url in "${URLS[@]}"; do
+                                echo "  ${j}) $(basename "$url")"
+                                ((j++))
+                            done
+                            echo ""
+                            read -p "Enter number to remove: " remove_num
+                            if [[ "$remove_num" =~ ^[0-9]+$ ]] && [[ $remove_num -ge 1 ]] && [[ $remove_num -le ${#URLS[@]} ]]; then
+                                unset 'URLS[$((remove_num-1))]'
+                                URLS=("${URLS[@]}")
+                                print_success "URL removed"
+                            else
+                                print_error "Invalid selection"
+                            fi
+                        fi
+                        ;;
+                    3)
+                        URLS=()
+                        print_info "All URLs cleared. Enter new URLs:"
+                        setup_urls
+                        ;;
+                    0|"")
+                        break
+                        ;;
+                esac
+                
+                # Show updated list
+                if [[ ${#URLS[@]} -gt 0 ]]; then
+                    echo ""
+                    echo "Current URLs (${#URLS[@]} total):"
+                    local k=1
+                    for url in "${URLS[@]}"; do
+                        echo "  ${k}) $(basename "$url")"
+                        ((k++))
+                    done
+                fi
+            else
+                break
+            fi
+        done
+        
+        # Ask to download now
+        echo ""
+        read -p "Download files now? (y/n) [y]: " download_now
+        download_now="${download_now:-y}"
+        if [[ "$download_now" =~ ^[Yy]$ ]]; then
+            save_config
+            save_urls
+            echo ""
+            download_all_files
+        fi
+    fi
+    
+    # Step 4: Telegram
+    echo ""
+    read -p "Do you want to configure Telegram notifications now? (y/n) [n]: " setup_tg_now
+    setup_tg_now="${setup_tg_now:-n}"
+    
+    if [[ "$setup_tg_now" =~ ^[Yy]$ ]]; then
+        setup_telegram
+    else
+        TELEGRAM_ENABLED="false"
+        TELEGRAM_BOT_TOKEN=""
+        TELEGRAM_CHAT_ID=""
+        TELEGRAM_THREAD_ID="0"
+        print_info "Telegram notifications skipped. You can configure later from the menu."
+    fi
+    
+    # Step 5: Update interval
     setup_update_interval
-    setup_telegram
     
     save_config
     save_urls
@@ -509,37 +690,22 @@ run_setup() {
         print_success "Script installed to ${SCRIPT_PATH}"
     fi
     
-    install_systemd_service "${UPDATE_INTERVAL}"
-    
-    echo ""
-    read -p "Download files now? (y/n) [y]: " download_now
-    download_now="${download_now:-y}"
-    if [[ "$download_now" =~ ^[Yy]$ ]]; then
-        echo ""
-        download_all_files
-    fi
+    setup_symlink
+    install_cron_job "${UPDATE_INTERVAL}"
     
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     print_success "Setup complete!"
     echo ""
-    echo "Useful commands:"
-    echo "  ${SCRIPT_PATH} --status    Show current status"
-    echo "  ${SCRIPT_PATH} --update    Download files now"
-    echo "  ${SCRIPT_PATH} --add-url   Add new URL"
-    echo "  ${SCRIPT_PATH} --list      List configured URLs"
-    echo "  ${SCRIPT_PATH} --help      Show all commands"
+    echo "Quick access commands:"
+    echo "  ${BOLD}ruleset-fetcher${NC}  - Full command"
+    echo "  ${BOLD}rfetcher${NC}         - Short alias"
     echo ""
     echo "Files are saved to: ${DOWNLOAD_DIR}"
     echo "Auto-update every: ${UPDATE_INTERVAL} hour(s)"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
-    echo -e "${CYAN}Created by prettyleaf${NC}"
-    echo -e "GitHub: ${BLUE}https://github.com/prettyleaf/ruleset-fetcher${NC}"
-    echo -e "Donate: ${GREEN}https://github.com/sponsors/prettyleaf${NC}"
-    echo ""
-    echo "Thank you for using Ruleset Fetcher! ❤️"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    read -p "Press Enter to continue..."
 }
 
 add_url() {
@@ -649,9 +815,9 @@ show_status() {
     fi
     
     echo ""
-    echo "Timer Status"
+    echo "Cron Status"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    show_timer_status
+    show_cron_status
     
     echo ""
     echo "Recent Logs"
@@ -885,7 +1051,9 @@ show_version() {
 
 show_help() {
     print_banner
-    echo "Usage: $(basename "$0") [OPTION]"
+    echo "Usage: ruleset-fetcher [OPTION]  or  rfetcher [OPTION]"
+    echo ""
+    echo "Running without options opens the interactive menu."
     echo ""
     echo "Options:"
     echo "  --setup, -s       Run interactive setup wizard"
@@ -895,19 +1063,22 @@ show_help() {
     echo "  --remove-url      Remove a URL from the list"
     echo "  --list, -l        List all configured URLs"
     echo "  --test-telegram   Send a test Telegram notification"
-    echo "  --enable-timer    Enable auto-update timer"
-    echo "  --disable-timer   Disable auto-update timer"
+    echo "  --enable-timer    Enable auto-update cron job"
+    echo "  --disable-timer   Disable auto-update cron job"
     echo "  --check-update    Check for script updates"
     echo "  --self-update     Update script to latest version"
     echo "  --version, -v     Show version information"
-    echo "  --uninstall       Remove all configuration and timers"
+    echo "  --uninstall       Remove all configuration and cron job"
     echo "  --help, -h        Show this help message"
     echo ""
+    echo "Quick access:"
+    echo "  ruleset-fetcher   Full command name"
+    echo "  rfetcher          Short alias"
+    echo ""
     echo "Examples:"
-    echo "  sudo $(basename "$0") --setup       # Initial setup"
-    echo "  sudo $(basename "$0") --update      # Force update now"
-    echo "  sudo $(basename "$0") --add-url     # Add new file URL"
-    echo "  sudo $(basename "$0") --self-update # Update script"
+    echo "  sudo ruleset-fetcher         # Open interactive menu"
+    echo "  sudo rfetcher --update       # Force update now"
+    echo "  sudo rfetcher --add-url      # Add new file URL"
     echo ""
     echo "Configuration files:"
     echo "  ${CONFIG_FILE}"
@@ -930,7 +1101,7 @@ uninstall() {
             download_dir="${DOWNLOAD_DIR}"
         fi
         
-        remove_systemd_service
+        remove_cron_job
         
         if [[ -n "${download_dir}" ]] && [[ -d "${download_dir}" ]]; then
             local safe_to_delete=true
@@ -944,28 +1115,20 @@ uninstall() {
             done
             
             if [[ "${safe_to_delete}" == true ]]; then
-                local file_count=$(find "${download_dir}" -type f \( -name "*.mrs" -o -name "*.yaml" -o -name "*.yml" -o -name "*.dat" -o -name "*.txt" ! -name "urls.txt" \) 2>/dev/null | wc -l)
+                local file_count=$(find "${download_dir}" -type f \( -name "*.mrs" -o -name "*.yaml" -o -name "*.yml" -o -name "*.dat" -o -name "*.txt" \) ! -name "urls.txt" 2>/dev/null | wc -l)
                 if [[ $file_count -gt 0 ]]; then
                     echo ""
                     print_info "Found ${file_count} downloaded ruleset file(s) in: ${download_dir}"
                     read -p "Remove downloaded files too? (y/n) [n]: " remove_files
                     
                     if [[ "$remove_files" =~ ^[Yy]$ ]]; then
-                        if [[ "${download_dir}" != "${CONFIG_DIR}" ]]; then
-                            rm -rf "${download_dir}"
-                            print_success "Downloaded files removed"
-                        fi
+                        rm -rf "${download_dir}"
+                        print_success "Downloaded files removed"
                     else
+                        print_info "Downloaded files kept in: ${download_dir}"
+                        # Only remove config files if download dir is same as config dir
                         if [[ "${download_dir}" == "${CONFIG_DIR}" ]]; then
                             rm -f "${CONFIG_FILE}" "${URLS_FILE}" "${LOG_FILE}"
-                            print_success "Configuration removed"
-                            print_info "Downloaded files kept in: ${download_dir}"
-                            rm -f "${SCRIPT_PATH}"
-                            echo ""
-                            print_success "Uninstall complete!"
-                            return
-                        else
-                            print_info "Downloaded files kept in: ${download_dir}"
                         fi
                     fi
                 fi
@@ -974,14 +1137,274 @@ uninstall() {
             fi
         fi
         
-        rm -rf "${CONFIG_DIR}"
-        rm -f "${SCRIPT_PATH}"
+        # Remove config directory if it still exists and is different from download dir
+        if [[ -d "${CONFIG_DIR}" ]] && [[ "${CONFIG_DIR}" != "${download_dir}" ]]; then
+            rm -rf "${CONFIG_DIR}"
+        fi
+        
+        # Remove symlinks and script
+        rm -f "${SYMLINK_PATH}" 2>/dev/null
+        rm -f "${SCRIPT_PATH}" 2>/dev/null
         
         echo ""
         print_success "Uninstall complete!"
     else
         print_info "Uninstall cancelled"
     fi
+}
+
+main_menu() {
+    while true; do
+        clear
+        echo -e "${GREEN}${BOLD}RULESET FETCHER by prettyleaf${NC}"
+        echo -e "${LIGHT_GRAY}Version: ${VERSION}${NC}"
+        echo ""
+        echo "   1. Download/update files now"
+        echo "   2. Manage URLs"
+        echo "   3. Show current status"
+        echo ""
+        echo "   4. Configure Telegram notifications"
+        echo "   5. Configure auto-update (cron)"
+        echo ""
+        echo "   6. Check for script updates"
+        echo "   7. Update script"
+        echo "   8. Uninstall"
+        echo ""
+        echo "   0. Exit"
+        echo ""
+        echo -e "   —  Quick access: ${BOLD}${GREEN}ruleset-fetcher${NC} or ${BOLD}${GREEN}rfetcher${NC}"
+        echo ""
+        
+        read -rp "${GREEN}[?]${NC} Select option: " choice
+        echo ""
+        
+        case $choice in
+            1)
+                download_all_files
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            2)
+                manage_urls_menu
+                ;;
+            3)
+                show_status
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            4)
+                configure_telegram_menu
+                ;;
+            5)
+                configure_timer_menu
+                ;;
+            6)
+                check_for_updates
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            7)
+                self_update
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            8)
+                uninstall
+                if [[ ! -f "${CONFIG_FILE}" ]]; then
+                    exit 0
+                fi
+                ;;
+            0)
+                echo "Goodbye!"
+                exit 0
+                ;;
+            *)
+                print_error "Invalid option. Please select from the menu."
+                read -rp "Press Enter to continue..."
+                ;;
+        esac
+    done
+}
+
+manage_urls_menu() {
+    while true; do
+        clear
+        echo -e "${GREEN}${BOLD}Manage URLs${NC}"
+        echo ""
+        
+        load_urls
+        if [[ ${#URLS[@]} -gt 0 ]]; then
+            print_info "Current URLs (${#URLS[@]} total):"
+            echo ""
+            local i=1
+            for url in "${URLS[@]}"; do
+                echo "   ${i}) $(basename "$url")"
+                ((i++))
+            done
+        else
+            print_warning "No URLs configured"
+        fi
+        
+        echo ""
+        echo "   1. Add URL"
+        echo "   2. Remove URL"
+        echo "   3. List URLs (with full paths)"
+        echo ""
+        echo "   0. Back to main menu"
+        echo ""
+        
+        read -rp "${GREEN}[?]${NC} Select option: " choice
+        echo ""
+        
+        case $choice in
+            1)
+                add_url
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            2)
+                remove_url
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            3)
+                list_urls
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            0)
+                break
+                ;;
+            *)
+                print_error "Invalid option."
+                read -rp "Press Enter to continue..."
+                ;;
+        esac
+    done
+}
+
+configure_telegram_menu() {
+    while true; do
+        clear
+        echo -e "${GREEN}${BOLD}Configure Telegram Notifications${NC}"
+        echo ""
+        
+        if load_config 2>/dev/null; then
+            if [[ "${TELEGRAM_ENABLED}" == "true" ]]; then
+                print_success "Telegram notifications: ${BOLD}ENABLED${NC}"
+                print_info "Bot Token: ${TELEGRAM_BOT_TOKEN:0:10}..."
+                print_info "Chat ID: ${TELEGRAM_CHAT_ID}"
+                if [[ -n "${TELEGRAM_THREAD_ID}" ]] && [[ "${TELEGRAM_THREAD_ID}" != "0" ]]; then
+                    print_info "Thread ID: ${TELEGRAM_THREAD_ID}"
+                fi
+            else
+                print_warning "Telegram notifications: ${BOLD}DISABLED${NC}"
+            fi
+        else
+            print_warning "Configuration not found"
+        fi
+        
+        echo ""
+        echo "   1. Configure Telegram settings"
+        echo "   2. Test notification"
+        echo "   3. Enable notifications"
+        echo "   4. Disable notifications"
+        echo ""
+        echo "   0. Back to main menu"
+        echo ""
+        
+        read -rp "${GREEN}[?]${NC} Select option: " choice
+        echo ""
+        
+        case $choice in
+            1)
+                setup_telegram
+                save_config
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            2)
+                test_telegram
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            3)
+                TELEGRAM_ENABLED="true"
+                save_config
+                print_success "Telegram notifications enabled"
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            4)
+                TELEGRAM_ENABLED="false"
+                save_config
+                print_success "Telegram notifications disabled"
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            0)
+                break
+                ;;
+            *)
+                print_error "Invalid option."
+                read -rp "Press Enter to continue..."
+                ;;
+        esac
+    done
+}
+
+configure_timer_menu() {
+    while true; do
+        clear
+        echo -e "${GREEN}${BOLD}Configure Auto-Update (Cron)${NC}"
+        echo ""
+        
+        if load_config 2>/dev/null; then
+            print_info "Current interval: ${UPDATE_INTERVAL} hour(s)"
+        fi
+        
+        echo ""
+        show_cron_status
+        
+        echo ""
+        echo "   1. Change update interval"
+        echo "   2. Enable cron job"
+        echo "   3. Disable cron job"
+        echo ""
+        echo "   0. Back to main menu"
+        echo ""
+        
+        read -rp "${GREEN}[?]${NC} Select option: " choice
+        echo ""
+        
+        case $choice in
+            1)
+                setup_update_interval
+                save_config
+                install_cron_job "${UPDATE_INTERVAL}"
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            2)
+                load_config
+                install_cron_job "${UPDATE_INTERVAL}"
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            3)
+                remove_cron_job
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            0)
+                break
+                ;;
+            *)
+                print_error "Invalid option."
+                read -rp "Press Enter to continue..."
+                ;;
+        esac
+    done
 }
 
 main() {
@@ -1015,11 +1438,11 @@ main() {
         --enable-timer)
             check_root
             load_config
-            install_systemd_service "${UPDATE_INTERVAL}"
+            install_cron_job "${UPDATE_INTERVAL}"
             ;;
         --disable-timer)
             check_root
-            remove_systemd_service
+            remove_cron_job
             ;;
         --uninstall)
             check_root
@@ -1039,18 +1462,14 @@ main() {
             show_help
             ;;
         "")
+            check_root
+            setup_symlink
             if [[ -f "${CONFIG_FILE}" ]]; then
-                show_help
+                load_config
+                main_menu
             else
-                echo ""
-                print_info "First time setup detected."
-                read -p "Run setup wizard? (y/n) [y]: " run_setup_prompt
-                run_setup_prompt="${run_setup_prompt:-y}"
-                if [[ "$run_setup_prompt" =~ ^[Yy]$ ]]; then
-                    run_setup
-                else
-                    show_help
-                fi
+                run_setup
+                main_menu
             fi
             ;;
         *)

@@ -7,23 +7,38 @@ An interactive script that fetches rule-set files for [mihomo](https://github.co
 ```bash
 wget https://raw.githubusercontent.com/prettyleaf/ruleset-fetcher/main/ruleset-fetcher.sh
 chmod +x ruleset-fetcher.sh
-sudo ./ruleset-fetcher.sh --setup
+sudo ./ruleset-fetcher.sh
 ```
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/prettyleaf/ruleset-fetcher/main/ruleset-fetcher.sh -o /tmp/ruleset-fetcher.sh && sudo bash /tmp/ruleset-fetcher.sh --setup
+curl -fsSL https://raw.githubusercontent.com/prettyleaf/ruleset-fetcher/main/ruleset-fetcher.sh -o /tmp/ruleset-fetcher.sh && sudo bash /tmp/ruleset-fetcher.sh
+```
+
+After installation, you can use either command from anywhere:
+```bash
+ruleset-fetcher
+rfetcher
 ```
 
 ## Usage
 
+Running without arguments opens the interactive menu:
+
 ```bash
-sudo ruleset-fetcher --setup
+ruleset-fetcher
 ```
 
-- **Download Directory** - Where to save rule-set files (default: `/opt/ruleset-fetcher`)
-- **URLs** - Add multiple URLs to download
-- **Update Interval** - How often to check for updates
-- **Telegram Notifications** - Optional alerts for updates
+### Setup Wizard
+
+The setup wizard guides you through:
+
+1. **Download Directory** - Where to save rule-set files (default: `/opt/ruleset-fetcher`)
+2. **URLs** - Add multiple URLs to download
+3. **Review & Download** - Confirm URLs and optionally download immediately
+4. **Telegram Notifications** - Optional alerts for updates
+5. **Update Interval** - How often to auto-update (via cron)
+
+### Commands
 
 | Command | Description |
 |---------|-------------|
@@ -34,36 +49,25 @@ sudo ruleset-fetcher --setup
 | `--remove-url` | Remove a URL from the list |
 | `--list`, `-l` | List all configured URLs |
 | `--test-telegram` | Send a test Telegram notification |
-| `--enable-timer` | Enable auto-update timer |
-| `--disable-timer` | Disable auto-update timer |
+| `--enable-timer` | Enable auto-update cron job |
+| `--disable-timer` | Disable auto-update cron job |
 | `--check-update` | Check for script updates |
 | `--self-update` | Update script to latest version |
 | `--version`, `-v` | Show version information |
-| `--uninstall` | Remove all configuration and timers |
+| `--uninstall` | Remove all configuration and cron job |
 | `--help`, `-h` | Show help message |
 
-### Examples
 
-```bash
-sudo ruleset-fetcher --update
-
-sudo ruleset-fetcher --add-url
-
-sudo ruleset-fetcher --status
-
-ruleset-fetcher --list
-```
-
-## Nginx Configuration (by Copilot)
+## Nginx Configuration
 
 To serve the downloaded files as a GitHub mirror, add this to your Nginx configuration:
 
 ```nginx
 server {
-    listen 80;
+    listen 443;
     server_name your-mirror-domain.com;
 
-    location /rulesets/ {
+    location /rule-sets/ {
         alias /opt/ruleset-fetcher/;
         autoindex on;
         
@@ -78,54 +82,28 @@ server {
 }
 ```
 
-## Usage in Mihomo Config
-
-Replace GitHub URLs with your mirror:
-
-```yaml
-# orig
-rule-providers:
-  discord:
-    type: http
-    url: "https://github.com/MetaCubeX/meta-rules-dat/raw/meta/geo/geosite/discord.mrs"
-    path: ./ruleset/discord.mrs
-    behavior: domain
-    format: mrs
-
-# with this script
-rule-providers:
-  discord:
-    type: http
-    url: "https://your-mirror-domain.com/rulesets/discord.mrs"
-    path: ./ruleset/discord.mrs
-    behavior: domain
-    format: mrs
-```
-
-## Files created by script
+## Files
 
 | File | Description |
 |------|-------------|
-| `/opt/ruleset-fetcher/config.conf` | Main configuration file |
+| `/usr/local/bin/ruleset-fetcher` | Main script |
+| `/usr/local/bin/rfetcher` | Short alias (symlink) |
+| `/opt/ruleset-fetcher/config.conf` | Configuration file |
 | `/opt/ruleset-fetcher/urls.txt` | List of URLs to download |
 | `/opt/ruleset-fetcher/ruleset-fetcher.log` | Log file |
-| `/etc/systemd/system/ruleset-fetcher.timer` | Systemd timer unit |
-| `/etc/systemd/system/ruleset-fetcher.service` | Systemd service unit |
 
+Auto-updates are managed via cron job (viewable with `crontab -l`).
 
-## Check Service Status
-
-```bash
-systemctl status ruleset-fetcher.timer
-
-systemctl status ruleset-fetcher.service
-
-journalctl -u ruleset-fetcher.service -f
-```
-
-## Manual Log Check
+## Check Status
 
 ```bash
+# Show full status
+sudo ruleset-fetcher --status
+
+# Check cron job
+crontab -l | grep ruleset-fetcher
+
+# Watch logs
 tail -f /opt/ruleset-fetcher/ruleset-fetcher.log
 ```
 

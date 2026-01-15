@@ -674,7 +674,7 @@ get_remote_version() {
     #   VERSION=1.2.3
     local version
     version=$(printf '%s\n' "$remote_script" \
-        | sed -nE "s/^[[:space:]]*VERSION[[:space:]]*=[[:space:]]*['\"]?([^'\"[:space:]]+)['\"]?.*/\1/p" \
+        | sed -nE "s/^[[:space:]]*VERSION[[:space:]]*=[[:space:]]*['\"]?([^[:space:]'\"]+)['\"]?.*/\1/p" \
         | head -n1)
 
     # Validate that a version was found
@@ -799,7 +799,7 @@ self_update() {
         return 1
     }
     
-    local download_ref="${remote_version}"
+    local download_ref="v${remote_version}"
     local download_url="https://raw.githubusercontent.com/${GITHUB_REPO}/${download_ref}/ruleset-fetcher.sh"
     
     if ! curl -fsSL --connect-timeout 30 --max-time 120 -o "${temp_file}" "${download_url}" 2>/dev/null; then

@@ -2,6 +2,8 @@
 
 An interactive script that fetches rule-set files for [mihomo](https://github.com/MetaCubeX/mihomo).
 
+![ruleset-fetcher](.github/assets/wizard.png)
+
 ## Quick Start
 
 ```bash

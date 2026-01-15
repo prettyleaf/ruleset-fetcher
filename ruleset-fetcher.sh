@@ -663,6 +663,140 @@ show_status() {
     fi
 }
 
+get_remote_version() {
+    local remote_script
+    remote_script=$(curl -fsSL --connect-timeout 10 --max-time 30 "${GITHUB_RAW_URL}" 2>/dev/null) || return 1
+    local version=$(echo "$remote_script" | grep -m1 '^VERSION=' | cut -d'"' -f2)
+    echo "${version#v}"
+}
+
+compare_versions() {
+    local v1="${1#v}"
+    local v2="${2#v}"
+
+    if [[ "$v1" == "$v2" ]]; then
+        return 0
+    fi
+    
+    local IFS=.
+    local i v1_parts=($v1) v2_parts=($v2)
+    
+    for ((i=0; i<${#v1_parts[@]} || i<${#v2_parts[@]}; i++)); do
+        local p1=${v1_parts[i]:-0}
+        local p2=${v2_parts[i]:-0}
+        
+        if ((p1 > p2)); then
+            return 1
+        elif ((p1 < p2)); then
+            return 2
+        fi
+    done
+    
+    return 0
+}
+
+check_for_updates() {
+    echo ""
+    print_info "Checking for updates..."
+    
+    local remote_version
+    remote_version=$(get_remote_version)
+    
+    if [[ -z "$remote_version" ]]; then
+        print_error "Failed to check for updates. Check your internet connection."
+        return 1
+    fi
+    
+    echo "  Current version: ${VERSION}"
+    echo "  Latest version:  ${remote_version}"
+    echo ""
+    
+    compare_versions "$VERSION" "$remote_version"
+    local result=$?
+    
+    if [[ $result -eq 0 ]]; then
+        print_success "You are running the latest version!"
+    elif [[ $result -eq 2 ]]; then
+        print_warning "A new version is available: v${remote_version}"
+        echo ""
+        echo "  Run 'sudo ruleset-fetcher --self-update' to update"
+        echo "  Or download from: https://github.com/${GITHUB_REPO}"
+    else
+        print_info "You are running a newer version than the released one."
+    fi
+}
+
+self_update() {
+    echo ""
+    print_info "Checking for updates..."
+    
+    local remote_version
+    remote_version=$(get_remote_version)
+    
+    if [[ -z "$remote_version" ]]; then
+        print_error "Failed to check for updates. Check your internet connection."
+        return 1
+    fi
+    
+    compare_versions "$VERSION" "$remote_version"
+    local result=$?
+    
+    if [[ $result -eq 0 ]]; then
+        print_success "You are already running the latest version (v${VERSION})"
+        return 0
+    elif [[ $result -eq 1 ]]; then
+        print_info "You are running a newer version (v${VERSION}) than released (v${remote_version})"
+        read -p "Downgrade to released version? (y/n) [n]: " confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            print_info "Update cancelled"
+            return 0
+        fi
+    else
+        echo "  Current version: ${VERSION}"
+        echo "  Latest version:  ${remote_version}"
+        echo ""
+        read -p "Update to v${remote_version}? (y/n) [y]: " confirm
+        confirm="${confirm:-y}"
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            print_info "Update cancelled"
+            return 0
+        fi
+    fi
+    
+    print_info "Downloading update..."
+    
+    local temp_file="/tmp/ruleset-fetcher-update.sh"
+    
+    if ! curl -fsSL --connect-timeout 30 --max-time 120 -o "${temp_file}" "${GITHUB_RAW_URL}" 2>/dev/null; then
+        print_error "Failed to download update"
+        rm -f "${temp_file}"
+        return 1
+    fi
+    
+    if ! head -1 "${temp_file}" | grep -q '^#!/bin/bash'; then
+        print_error "Downloaded file is not a valid script"
+        rm -f "${temp_file}"
+        return 1
+    fi
+    
+    if [[ -f "${SCRIPT_PATH}" ]]; then
+        cp "${SCRIPT_PATH}" "${SCRIPT_PATH}.backup"
+    fi
+    
+    mv "${temp_file}" "${SCRIPT_PATH}"
+    chmod +x "${SCRIPT_PATH}"
+    
+    print_success "Updated successfully to v${remote_version}!"
+    echo ""
+    print_info "Backup saved to: ${SCRIPT_PATH}.backup"
+    log_message "INFO" "Updated from v${VERSION} to v${remote_version}"
+}
+
+show_version() {
+    echo "ruleset-fetcher v${VERSION}"
+    echo "https://github.com/${GITHUB_REPO}"
+}
+
 show_help() {
     print_banner
     echo "Usage: $(basename "$0") [OPTION]"

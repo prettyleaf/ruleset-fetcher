@@ -1122,8 +1122,8 @@ uninstall() {
                 fi
             done
             
-                local file_count=$(find "${download_dir}" -type f \( -name "*.mrs" -o -name "*.yaml" -o -name "*.yml" -o -name "*.dat" -o \( -name "*.txt" ! -name "urls.txt" \) \) 2>/dev/null | wc -l)
-                local file_count=$(find "${download_dir}" -type f \( -name "*.mrs" -o -name "*.yaml" -o -name "*.yml" -o -name "*.dat" -o -name "*.txt" ! -name "urls.txt" \) 2>/dev/null | wc -l)
+            if [[ "${safe_to_delete}" == true ]]; then
+                local file_count=$(find "${download_dir}" -type f \( -name "*.mrs" -o -name "*.yaml" -o -name "*.yml" -o -name "*.dat" -o -name "*.txt" \) ! -name "urls.txt" 2>/dev/null | wc -l)
                 if [[ $file_count -gt 0 ]]; then
                     echo ""
                     print_info "Found ${file_count} downloaded ruleset file(s) in: ${download_dir}"

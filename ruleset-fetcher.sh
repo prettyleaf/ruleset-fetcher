@@ -9,6 +9,10 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+VERSION="1.0.1"
+GITHUB_REPO="prettyleaf/ruleset-fetcher"
+GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main/ruleset-fetcher.sh"
+
 CONFIG_DIR="/opt/ruleset-fetcher"
 CONFIG_FILE="${CONFIG_DIR}/config.conf"
 URLS_FILE="${CONFIG_DIR}/urls.txt"
@@ -23,6 +27,8 @@ print_banner() {
     echo '| |  | |_| | |  __/\__ \  __/ |_  |  _|  __/ || (__| | | |  __/ |   '
     echo '|_|   \__,_|_|\___||___/\___|\__| |_|  \___|\__\___|_| |_|\___|_|   '
     echo -e "${NC}"
+    echo -e "                                              ${BLUE}v${VERSION}${NC}"
+    echo ""
 }
 
 log_message() {
@@ -657,6 +663,226 @@ show_status() {
     fi
 }
 
+get_remote_version() {
+    local remote_script
+    remote_script=$(curl -fsSL --connect-timeout 10 --max-time 30 "${GITHUB_RAW_URL}" 2>/dev/null) || return 1
+    
+    # Extract VERSION= line robustly, allowing spaces and single/double quotes.
+    # Examples handled:
+    #   VERSION="1.2.3"
+    #   VERSION = '1.2.3'
+    #   VERSION=1.2.3
+    local version
+    version=$(printf '%s\n' "$remote_script" \
+        | sed -nE "s/^[[:space:]]*VERSION[[:space:]]*=[[:space:]]*['\"]?([^[:space:]'\"]+)['\"]?.*/\1/p" \
+        | head -n1)
+
+    # Validate that a version was found
+    if [[ -z "$version" ]]; then
+        print_error "Failed to parse remote version information from ${GITHUB_RAW_URL}"
+        return 1
+    fi
+
+    # Validate version format (optionally leading 'v', then numeric dot-separated parts)
+    if ! [[ "$version" =~ ^v?[0-9]+(\.[0-9]+)*$ ]]; then
+        print_error "Invalid version format in remote script: '$version'"
+        return 1
+    fi
+    
+    echo "${version#v}"
+}
+
+compare_versions() {
+    local v1="${1#v}"
+    local v2="${2#v}"
+
+    if [[ "$v1" == "$v2" ]]; then
+        return 0
+    fi
+    
+    local IFS_SAVE="$IFS"
+    IFS='.'
+    local v1_parts=()
+    local v2_parts=()
+    read -ra v1_parts <<< "$v1"
+    read -ra v2_parts <<< "$v2"
+    IFS="$IFS_SAVE"
+    
+    local i
+    for ((i=0; i<${#v1_parts[@]} || i<${#v2_parts[@]}; i++)); do
+        local p1=${v1_parts[i]:-0}
+        local p2=${v2_parts[i]:-0}
+        
+        if ((p1 > p2)); then
+            return 1
+        elif ((p1 < p2)); then
+            return 2
+        fi
+    done
+    
+    return 0
+}
+
+check_for_updates() {
+    echo ""
+    print_info "Checking for updates..."
+    
+    local remote_version
+    remote_version=$(get_remote_version)
+    
+    if [[ -z "$remote_version" ]]; then
+        print_error "Failed to check for updates. Check your internet connection."
+        return 1
+    fi
+    
+    echo "  Current version: ${VERSION}"
+    echo "  Latest version:  ${remote_version}"
+    echo ""
+    
+    compare_versions "$VERSION" "$remote_version"
+    local result=$?
+    
+    if [[ $result -eq 0 ]]; then
+        print_success "You are running the latest version!"
+    elif [[ $result -eq 2 ]]; then
+        print_warning "A new version is available: v${remote_version}"
+        echo ""
+        echo "  Run 'sudo ruleset-fetcher --self-update' to update"
+        echo "  Or download from: https://github.com/${GITHUB_REPO}"
+    else
+        print_info "You are running a newer version than the released one."
+    fi
+}
+
+self_update() {
+    echo ""
+    print_info "Checking for updates..."
+    
+    # Clean up old backup files (older than 1 day)
+    if [[ -f "${SCRIPT_PATH}.backup" ]]; then
+        local backup_timestamp
+        backup_timestamp=$(stat -c %Y "${SCRIPT_PATH}.backup" 2>/dev/null || stat -f %m "${SCRIPT_PATH}.backup" 2>/dev/null)
+        
+        if [[ -n "$backup_timestamp" && "$backup_timestamp" =~ ^[0-9]+$ ]]; then
+            local backup_age_seconds=$(( $(date +%s) - backup_timestamp ))
+            local one_day_seconds=$((24 * 60 * 60))  # 86400 seconds
+            
+            if [[ $backup_age_seconds -gt $one_day_seconds ]]; then
+                rm -f "${SCRIPT_PATH}.backup"
+                log_message "INFO" "Removed old backup file (${backup_age_seconds}s old)"
+            fi
+        fi
+    fi
+    
+    local remote_version
+    remote_version=$(get_remote_version)
+    
+    if [[ -z "$remote_version" ]]; then
+        print_error "Failed to check for updates. Check your internet connection."
+        return 1
+    fi
+    
+    compare_versions "$VERSION" "$remote_version"
+    local result=$?
+    
+    if [[ $result -eq 0 ]]; then
+        print_success "You are already running the latest version (v${VERSION})"
+        return 0
+    elif [[ $result -eq 1 ]]; then
+        print_info "You are running a newer version (v${VERSION}) than released (v${remote_version})"
+        read -p "Downgrade to released version? (y/n) [n]: " confirm
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            print_info "Update cancelled"
+            return 0
+        fi
+    else
+        echo "  Current version: ${VERSION}"
+        echo "  Latest version:  ${remote_version}"
+        echo ""
+        read -p "Update to v${remote_version}? (y/n) [y]: " confirm
+        confirm="${confirm:-y}"
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            print_info "Update cancelled"
+            return 0
+        fi
+    fi
+    
+    print_info "Downloading update..."
+    
+    local temp_file
+    temp_file="$(mktemp -t ruleset-fetcher-update.XXXXXX)" || {
+        print_error "Failed to create temporary file for update"
+        return 1
+    }
+    
+    local download_ref="v${remote_version}"
+    local download_url="https://raw.githubusercontent.com/${GITHUB_REPO}/${download_ref}/ruleset-fetcher.sh"
+    
+    if ! curl -fsSL --connect-timeout 30 --max-time 120 -o "${temp_file}" "${download_url}" 2>/dev/null; then
+        print_error "Failed to download update"
+        rm -f "${temp_file}"
+        return 1
+    fi
+    
+    if ! head -1 "${temp_file}" | grep -q '^#!/bin/bash'; then
+        print_error "Downloaded file is not a valid script"
+        rm -f "${temp_file}"
+        return 1
+    fi
+    
+    local had_backup=false
+    if [[ -f "${SCRIPT_PATH}" ]]; then
+        if [[ ! -r "${SCRIPT_PATH}" ]]; then
+            print_error "Current script is not readable; aborting update to avoid data loss."
+            rm -f "${temp_file}"
+            return 1
+        fi
+        if ! cp "${SCRIPT_PATH}" "${SCRIPT_PATH}.backup"; then
+            print_error "Failed to create backup; aborting update to avoid data loss."
+            rm -f "${temp_file}"
+            return 1
+        fi
+        had_backup=true
+    fi
+    
+    if ! mv "${temp_file}" "${SCRIPT_PATH}"; then
+        print_error "Failed to install update (move operation failed)"
+        if [[ "${had_backup}" == true ]]; then
+            if mv "${SCRIPT_PATH}.backup" "${SCRIPT_PATH}"; then
+                print_info "Restored previous version from backup."
+            else
+                print_error "Failed to restore previous version from backup at ${SCRIPT_PATH}.backup"
+            fi
+        fi
+        rm -f "${temp_file}"
+        return 1
+    fi
+    
+    if ! chmod +x "${SCRIPT_PATH}"; then
+        print_error "Failed to make updated script executable (chmod failed)"
+        if [[ "${had_backup}" == true ]]; then
+            if mv "${SCRIPT_PATH}.backup" "${SCRIPT_PATH}"; then
+                print_info "Restored previous version from backup."
+            else
+                print_error "Failed to restore previous version from backup at ${SCRIPT_PATH}.backup"
+            fi
+        fi
+        return 1
+    fi
+    
+    print_success "Updated successfully to v${remote_version}!"
+    echo ""
+    if [[ -f "${SCRIPT_PATH}.backup" ]]; then
+        print_info "Backup saved to: ${SCRIPT_PATH}.backup"
+    fi
+    log_message "INFO" "Updated from v${VERSION} to v${remote_version}"
+}
+
+show_version() {
+    echo "ruleset-fetcher v${VERSION}"
+    echo "https://github.com/${GITHUB_REPO}"
+}
+
 show_help() {
     print_banner
     echo "Usage: $(basename "$0") [OPTION]"
@@ -671,6 +897,9 @@ show_help() {
     echo "  --test-telegram   Send a test Telegram notification"
     echo "  --enable-timer    Enable auto-update timer"
     echo "  --disable-timer   Disable auto-update timer"
+    echo "  --check-update    Check for script updates"
+    echo "  --self-update     Update script to latest version"
+    echo "  --version, -v     Show version information"
     echo "  --uninstall       Remove all configuration and timers"
     echo "  --help, -h        Show this help message"
     echo ""
@@ -678,6 +907,7 @@ show_help() {
     echo "  sudo $(basename "$0") --setup       # Initial setup"
     echo "  sudo $(basename "$0") --update      # Force update now"
     echo "  sudo $(basename "$0") --add-url     # Add new file URL"
+    echo "  sudo $(basename "$0") --self-update # Update script"
     echo ""
     echo "Configuration files:"
     echo "  ${CONFIG_FILE}"
@@ -794,6 +1024,16 @@ main() {
         --uninstall)
             check_root
             uninstall
+            ;;
+        --check-update)
+            check_for_updates
+            ;;
+        --self-update)
+            check_root
+            self_update
+            ;;
+        --version|-v)
+            show_version
             ;;
         --help|-h)
             show_help

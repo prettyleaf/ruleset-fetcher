@@ -1130,21 +1130,13 @@ uninstall() {
                     read -p "Remove downloaded files too? (y/n) [n]: " remove_files
                     
                     if [[ "$remove_files" =~ ^[Yy]$ ]]; then
-                        if [[ "${download_dir}" != "${CONFIG_DIR}" ]]; then
-                            rm -rf "${download_dir}"
-                            print_success "Downloaded files removed"
-                        fi
+                        rm -rf "${download_dir}"
+                        print_success "Downloaded files removed"
                     else
+                        print_info "Downloaded files kept in: ${download_dir}"
+                        # Only remove config files if download dir is same as config dir
                         if [[ "${download_dir}" == "${CONFIG_DIR}" ]]; then
                             rm -f "${CONFIG_FILE}" "${URLS_FILE}" "${LOG_FILE}"
-                            print_success "Configuration removed"
-                            print_info "Downloaded files kept in: ${download_dir}"
-                            rm -f "${SCRIPT_PATH}"
-                            echo ""
-                            print_success "Uninstall complete!"
-                            return
-                        else
-                            print_info "Downloaded files kept in: ${download_dir}"
                         fi
                     fi
                 fi
@@ -1153,14 +1145,14 @@ uninstall() {
             fi
         fi
         
-        if [[ -L "${SYMLINK_PATH}" || -e "${SYMLINK_PATH}" ]]; then
-            rm -f "${SYMLINK_PATH}"
-            print_success "Removed symlink: ${SYMLINK_PATH}"
-        else
-            print_info "No symlink found to remove at: ${SYMLINK_PATH}"
+        # Remove config directory if it still exists and is different from download dir
+        if [[ -d "${CONFIG_DIR}" ]] && [[ "${CONFIG_DIR}" != "${download_dir}" ]]; then
+            rm -rf "${CONFIG_DIR}"
         fi
-        rm -f "${SCRIPT_PATH}"
-        rm -f "${SYMLINK_PATH}"
+        
+        # Remove symlinks and script
+        rm -f "${SYMLINK_PATH}" 2>/dev/null
+        rm -f "${SCRIPT_PATH}" 2>/dev/null
         
         echo ""
         print_success "Uninstall complete!"

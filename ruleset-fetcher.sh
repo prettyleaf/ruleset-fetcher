@@ -13,17 +13,17 @@ LOG_FILE="${CONFIG_DIR}/ruleset-fetcher.log"
 SCRIPT_PATH="/usr/local/bin/ruleset-fetcher"
 SYMLINK_PATH="/usr/local/bin/rfetcher"
 
-# Colors with terminal detection
-if [[ -t 0 ]]; then
-    RED=$'\e[31m'
-    GREEN=$'\e[32m'
-    YELLOW=$'\e[33m'
-    BLUE=$'\e[34m'
-    CYAN=$'\e[36m'
-    GRAY=$'\e[37m'
-    LIGHT_GRAY=$'\e[90m'
-    NC=$'\e[0m'
-    BOLD=$'\e[1m'
+# Colors with terminal detection (stdout or stderr)
+if [[ -t 1 || -t 2 ]]; then
+    RED=$'\033[31m'
+    GREEN=$'\033[32m'
+    YELLOW=$'\033[33m'
+    BLUE=$'\033[34m'
+    CYAN=$'\033[36m'
+    GRAY=$'\033[37m'
+    LIGHT_GRAY=$'\033[90m'
+    NC=$'\033[0m'
+    BOLD=$'\033[1m'
 else
     RED=""
     GREEN=""
@@ -336,6 +336,9 @@ download_all_files() {
     return $fail_count
 }
 
+# Cron job marker to identify our entries
+CRON_MARKER="# ruleset-fetcher-auto-update"
+
 install_cron_job() {
     local interval_hours="$1"
     
@@ -353,26 +356,54 @@ install_cron_job() {
         *)  cron_expr="0 */${interval_hours} * * *" ;;  # Custom interval
     esac
     
-    # Add new cron job
-    (crontab -l 2>/dev/null | grep -v "ruleset-fetcher"; echo "${cron_expr} ${SCRIPT_PATH} --update >/dev/null 2>&1") | crontab -
+    # Get existing crontab or start with empty
+    local existing_cron
+    existing_cron=$(crontab -l 2>/dev/null) || existing_cron=""
+    
+    # Add new cron job with marker
+    local new_cron_line="${cron_expr} ${SCRIPT_PATH} --update >/dev/null 2>&1 ${CRON_MARKER}"
+    
+    if [[ -z "$existing_cron" ]]; then
+        echo "$new_cron_line" | crontab -
+    else
+        printf '%s\n%s\n' "$existing_cron" "$new_cron_line" | crontab -
+    fi
     
     print_success "Cron job installed"
     print_info "Files will be updated every ${interval_hours} hour(s)"
 }
 
 remove_cron_job() {
-    crontab -l 2>/dev/null | grep -v "ruleset-fetcher" | crontab - 2>/dev/null || true
+    local existing_cron
+    existing_cron=$(crontab -l 2>/dev/null) || existing_cron=""
+    
+    if [[ -z "$existing_cron" ]]; then
+        print_info "No crontab exists"
+        return 0
+    fi
+    
+    # Only remove lines with our specific marker
+    local new_cron
+    new_cron=$(echo "$existing_cron" | grep -v "$CRON_MARKER" || true)
+    
+    if [[ -z "$new_cron" ]]; then
+        crontab -r 2>/dev/null || true
+    else
+        echo "$new_cron" | crontab -
+    fi
+    
     print_success "Cron job removed"
 }
 
 show_cron_status() {
     local cron_line
-    cron_line=$(crontab -l 2>/dev/null | grep "ruleset-fetcher" || true)
+    cron_line=$(crontab -l 2>/dev/null | grep "$CRON_MARKER" || true)
     
     if [[ -n "$cron_line" ]]; then
         print_success "Auto-update cron job is ACTIVE"
         echo ""
-        echo "  Schedule: $cron_line"
+        # Show without the marker for cleaner display
+        echo "  Schedule: ${cron_line% $CRON_MARKER}"
     else
         print_warning "Auto-update cron job is NOT active"
     fi
@@ -384,7 +415,7 @@ setup_download_directory() {
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     
-    local default_dir="/opt/ruleset-fetcher/rulesets"
+    local default_dir="${CONFIG_DIR}"
     echo -e "Download directory for rule-set files."
     echo -e "Default: ${BOLD}${default_dir}${NC}"
     echo ""
@@ -518,7 +549,10 @@ setup_telegram() {
 }
 
 run_setup() {
-    clear
+    # Respect RF_NO_CLEAR environment variable: if set, skip clearing the terminal before setup.
+    if [[ -t 0 && -z "${RF_NO_CLEAR:-}" ]]; then
+        clear
+    fi
     print_banner
     check_root
     check_dependencies
@@ -1088,7 +1122,7 @@ uninstall() {
                 fi
             done
             
-            if [[ "${safe_to_delete}" == true ]]; then
+                local file_count=$(find "${download_dir}" -type f \( -name "*.mrs" -o -name "*.yaml" -o -name "*.yml" -o -name "*.dat" -o \( -name "*.txt" ! -name "urls.txt" \) \) 2>/dev/null | wc -l)
                 local file_count=$(find "${download_dir}" -type f \( -name "*.mrs" -o -name "*.yaml" -o -name "*.yml" -o -name "*.dat" -o -name "*.txt" ! -name "urls.txt" \) 2>/dev/null | wc -l)
                 if [[ $file_count -gt 0 ]]; then
                     echo ""
@@ -1119,7 +1153,12 @@ uninstall() {
             fi
         fi
         
-        rm -rf "${CONFIG_DIR}"
+        if [[ -L "${SYMLINK_PATH}" || -e "${SYMLINK_PATH}" ]]; then
+            rm -f "${SYMLINK_PATH}"
+            print_success "Removed symlink: ${SYMLINK_PATH}"
+        else
+            print_info "No symlink found to remove at: ${SYMLINK_PATH}"
+        fi
         rm -f "${SCRIPT_PATH}"
         rm -f "${SYMLINK_PATH}"
         

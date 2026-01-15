@@ -1,7 +1,5 @@
 #!/bin/bash
 
-set -e
-
 VERSION="1.0.1"
 GITHUB_REPO="prettyleaf/ruleset-fetcher"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main/ruleset-fetcher.sh"
@@ -439,27 +437,21 @@ setup_urls() {
     echo "Enter the URLs of files to download (one per line)."
     echo "Example: https://github.com/MetaCubeX/meta-rules-dat/raw/meta/geo/geosite/discord.mrs"
     echo ""
-    echo "Press Enter twice when done."
+    echo "Press Enter when done."
     echo ""
     
     URLS=()
-    local empty_count=0
     
     while true; do
-        read -p "URL: " url
+        read -r -p "URL: " url || true
         if [[ -z "$url" ]]; then
-            ((empty_count++))
-            if [[ $empty_count -ge 1 ]]; then
-                break
-            fi
+            break
+        fi
+        if [[ "$url" =~ ^https?:// ]]; then
+            URLS+=("$url")
+            print_success "Added: $(basename "$url")"
         else
-            empty_count=0
-            if [[ "$url" =~ ^https?:// ]]; then
-                URLS+=("$url")
-                print_success "Added: $(basename "$url")"
-            else
-                print_warning "Invalid URL format, skipping: $url"
-            fi
+            print_warning "Invalid URL format, skipping: $url"
         fi
     done
     

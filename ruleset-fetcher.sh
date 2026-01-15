@@ -666,7 +666,29 @@ show_status() {
 get_remote_version() {
     local remote_script
     remote_script=$(curl -fsSL --connect-timeout 10 --max-time 30 "${GITHUB_RAW_URL}" 2>/dev/null) || return 1
-    local version=$(echo "$remote_script" | grep -m1 '^VERSION=' | cut -d'"' -f2)
+    
+    # Extract VERSION= line robustly, allowing spaces and single/double quotes.
+    # Examples handled:
+    #   VERSION="1.2.3"
+    #   VERSION = '1.2.3'
+    #   VERSION=1.2.3
+    local version
+    version=$(printf '%s\n' "$remote_script" \
+        | sed -nE "s/^[[:space:]]*VERSION[[:space:]]*=[[:space:]]*['\"]?([^[:space:]'\"]+)['\"]?.*/\1/p" \
+        | head -n1)
+
+    # Validate that a version was found
+    if [[ -z "$version" ]]; then
+        print_error "Failed to parse remote version information from ${GITHUB_RAW_URL}"
+        return 1
+    fi
+
+    # Validate version format (optionally leading 'v', then numeric dot-separated parts)
+    if ! [[ "$version" =~ ^v?[0-9]+(\.[0-9]+)*$ ]]; then
+        print_error "Invalid version format in remote script: '$version'"
+        return 1
+    fi
+    
     echo "${version#v}"
 }
 
@@ -678,9 +700,15 @@ compare_versions() {
         return 0
     fi
     
-    local IFS=.
-    local i v1_parts=($v1) v2_parts=($v2)
+    local IFS_SAVE="$IFS"
+    IFS='.'
+    local v1_parts=()
+    local v2_parts=()
+    read -ra v1_parts <<< "$v1"
+    read -ra v2_parts <<< "$v2"
+    IFS="$IFS_SAVE"
     
+    local i
     for ((i=0; i<${#v1_parts[@]} || i<${#v2_parts[@]}; i++)); do
         local p1=${v1_parts[i]:-0}
         local p2=${v2_parts[i]:-0}
@@ -730,6 +758,22 @@ self_update() {
     echo ""
     print_info "Checking for updates..."
     
+    # Clean up old backup files (older than 1 day)
+    if [[ -f "${SCRIPT_PATH}.backup" ]]; then
+        local backup_timestamp
+        backup_timestamp=$(stat -c %Y "${SCRIPT_PATH}.backup" 2>/dev/null || stat -f %m "${SCRIPT_PATH}.backup" 2>/dev/null)
+        
+        if [[ -n "$backup_timestamp" && "$backup_timestamp" =~ ^[0-9]+$ ]]; then
+            local backup_age_seconds=$(( $(date +%s) - backup_timestamp ))
+            local one_day_seconds=$((24 * 60 * 60))  # 86400 seconds
+            
+            if [[ $backup_age_seconds -gt $one_day_seconds ]]; then
+                rm -f "${SCRIPT_PATH}.backup"
+                log_message "INFO" "Removed old backup file (${backup_age_seconds}s old)"
+            fi
+        fi
+    fi
+    
     local remote_version
     remote_version=$(get_remote_version)
     
@@ -765,9 +809,16 @@ self_update() {
     
     print_info "Downloading update..."
     
-    local temp_file="/tmp/ruleset-fetcher-update.sh"
+    local temp_file
+    temp_file="$(mktemp -t ruleset-fetcher-update.XXXXXX)" || {
+        print_error "Failed to create temporary file for update"
+        return 1
+    }
     
-    if ! curl -fsSL --connect-timeout 30 --max-time 120 -o "${temp_file}" "${GITHUB_RAW_URL}" 2>/dev/null; then
+    local download_ref="v${remote_version}"
+    local download_url="https://raw.githubusercontent.com/${GITHUB_REPO}/${download_ref}/ruleset-fetcher.sh"
+    
+    if ! curl -fsSL --connect-timeout 30 --max-time 120 -o "${temp_file}" "${download_url}" 2>/dev/null; then
         print_error "Failed to download update"
         rm -f "${temp_file}"
         return 1
@@ -779,16 +830,51 @@ self_update() {
         return 1
     fi
     
+    local had_backup=false
     if [[ -f "${SCRIPT_PATH}" ]]; then
-        cp "${SCRIPT_PATH}" "${SCRIPT_PATH}.backup"
+        if [[ ! -r "${SCRIPT_PATH}" ]]; then
+            print_error "Current script is not readable; aborting update to avoid data loss."
+            rm -f "${temp_file}"
+            return 1
+        fi
+        if ! cp "${SCRIPT_PATH}" "${SCRIPT_PATH}.backup"; then
+            print_error "Failed to create backup; aborting update to avoid data loss."
+            rm -f "${temp_file}"
+            return 1
+        fi
+        had_backup=true
     fi
     
-    mv "${temp_file}" "${SCRIPT_PATH}"
-    chmod +x "${SCRIPT_PATH}"
+    if ! mv "${temp_file}" "${SCRIPT_PATH}"; then
+        print_error "Failed to install update (move operation failed)"
+        if [[ "${had_backup}" == true ]]; then
+            if mv "${SCRIPT_PATH}.backup" "${SCRIPT_PATH}"; then
+                print_info "Restored previous version from backup."
+            else
+                print_error "Failed to restore previous version from backup at ${SCRIPT_PATH}.backup"
+            fi
+        fi
+        rm -f "${temp_file}"
+        return 1
+    fi
+    
+    if ! chmod +x "${SCRIPT_PATH}"; then
+        print_error "Failed to make updated script executable (chmod failed)"
+        if [[ "${had_backup}" == true ]]; then
+            if mv "${SCRIPT_PATH}.backup" "${SCRIPT_PATH}"; then
+                print_info "Restored previous version from backup."
+            else
+                print_error "Failed to restore previous version from backup at ${SCRIPT_PATH}.backup"
+            fi
+        fi
+        return 1
+    fi
     
     print_success "Updated successfully to v${remote_version}!"
     echo ""
-    print_info "Backup saved to: ${SCRIPT_PATH}.backup"
+    if [[ -f "${SCRIPT_PATH}.backup" ]]; then
+        print_info "Backup saved to: ${SCRIPT_PATH}.backup"
+    fi
     log_message "INFO" "Updated from v${VERSION} to v${remote_version}"
 }
 

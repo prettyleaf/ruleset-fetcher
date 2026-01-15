@@ -758,6 +758,18 @@ self_update() {
     echo ""
     print_info "Checking for updates..."
     
+    # Clean up old backup files (older than 1 day)
+    if [[ -f "${SCRIPT_PATH}.backup" ]]; then
+        local backup_age_seconds
+        backup_age_seconds=$(( $(date +%s) - $(stat -c %Y "${SCRIPT_PATH}.backup" 2>/dev/null || stat -f %m "${SCRIPT_PATH}.backup" 2>/dev/null) ))
+        local one_day_seconds=86400
+        
+        if [[ $backup_age_seconds -gt $one_day_seconds ]]; then
+            rm -f "${SCRIPT_PATH}.backup"
+            log_message "INFO" "Removed old backup file (${backup_age_seconds}s old)"
+        fi
+    fi
+    
     local remote_version
     remote_version=$(get_remote_version)
     

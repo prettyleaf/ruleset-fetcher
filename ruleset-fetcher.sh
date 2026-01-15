@@ -762,12 +762,15 @@ self_update() {
     if [[ -f "${SCRIPT_PATH}.backup" ]]; then
         local backup_timestamp
         backup_timestamp=$(stat -c %Y "${SCRIPT_PATH}.backup" 2>/dev/null || stat -f %m "${SCRIPT_PATH}.backup" 2>/dev/null)
-        local backup_age_seconds=$(( $(date +%s) - backup_timestamp ))
-        local one_day_seconds=$((24 * 60 * 60))  # 86400 seconds
         
-        if [[ $backup_age_seconds -gt $one_day_seconds ]]; then
-            rm -f "${SCRIPT_PATH}.backup"
-            log_message "INFO" "Removed old backup file (${backup_age_seconds}s old)"
+        if [[ -n "$backup_timestamp" && "$backup_timestamp" =~ ^[0-9]+$ ]]; then
+            local backup_age_seconds=$(( $(date +%s) - backup_timestamp ))
+            local one_day_seconds=$((24 * 60 * 60))  # 86400 seconds
+            
+            if [[ $backup_age_seconds -gt $one_day_seconds ]]; then
+                rm -f "${SCRIPT_PATH}.backup"
+                log_message "INFO" "Removed old backup file (${backup_age_seconds}s old)"
+            fi
         fi
     fi
     

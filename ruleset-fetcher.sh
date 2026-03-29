@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="1.0.2"
+VERSION="1.1.0"
 GITHUB_REPO="prettyleaf/ruleset-fetcher"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main/ruleset-fetcher.sh"
 
@@ -10,6 +10,14 @@ URLS_FILE="${CONFIG_DIR}/urls.txt"
 LOG_FILE="${CONFIG_DIR}/ruleset-fetcher.log"
 SCRIPT_PATH="/usr/local/bin/ruleset-fetcher"
 SYMLINK_PATH="/usr/local/bin/rfetcher"
+
+DOWNLOAD_DIR=""
+UPDATE_INTERVAL="6"
+TELEGRAM_BOT_TOKEN=""
+TELEGRAM_CHAT_ID=""
+TELEGRAM_THREAD_ID="0"
+TELEGRAM_ENABLED="false"
+GITHUB_ACCESS_TOKEN=""
 
 # Colors with terminal detection (stdout or stderr)
 if [[ -t 1 || -t 2 ]]; then
@@ -204,6 +212,9 @@ TELEGRAM_THREAD_ID="${TELEGRAM_THREAD_ID}"
 
 # Enable Telegram notifications (true/false)
 TELEGRAM_ENABLED="${TELEGRAM_ENABLED}"
+
+# GitHub token for private repositories and release assets
+GITHUB_ACCESS_TOKEN="${GITHUB_ACCESS_TOKEN}"
 EOF
     chmod 600 "${CONFIG_FILE}"
     print_success "Configuration saved to ${CONFIG_FILE}"
@@ -224,16 +235,115 @@ load_urls() {
     fi
 }
 
-download_file() {
+get_url_basename() {
+    local url="${1%%\?*}"
+    basename "${url}"
+}
+
+is_github_url() {
+    local url="$1"
+    [[ "${url}" =~ ^https://(api\.github\.com|github\.com|raw\.githubusercontent\.com)/ ]]
+}
+
+is_github_release_asset_url() {
+    local url="$1"
+    [[ "${url}" =~ ^https://api\.github\.com/repos/[^/]+/[^/]+/releases/assets/[0-9]+([/?].*)?$ ]]
+}
+
+get_github_token() {
+    if [[ -n "${RULESET_FETCHER_GITHUB_TOKEN:-}" ]]; then
+        echo "${RULESET_FETCHER_GITHUB_TOKEN}"
+    elif [[ -n "${RF_GITHUB_TOKEN:-}" ]]; then
+        echo "${RF_GITHUB_TOKEN}"
+    elif [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        echo "${GITHUB_TOKEN}"
+    else
+        echo "${GITHUB_ACCESS_TOKEN:-}"
+    fi
+}
+
+download_github_release_asset() {
     local url="$1"
     local dest_dir="$2"
-    local filename=$(basename "$url")
+    local github_token
+    github_token="$(get_github_token)"
+    local metadata_headers=(-H "Accept: application/vnd.github+json")
+    local download_headers=(-H "Accept: application/octet-stream")
+
+    if [[ -n "${github_token}" ]]; then
+        metadata_headers+=(-H "Authorization: Bearer ${github_token}")
+        download_headers+=(-H "Authorization: Bearer ${github_token}")
+    fi
+
+    local metadata
+    metadata=$(curl -fsSL --connect-timeout 30 --max-time 120 \
+        "${metadata_headers[@]}" \
+        "${url}" 2>/dev/null) || {
+        if [[ -z "${github_token}" ]]; then
+            log_message "ERROR" "GitHub release asset metadata request failed. Configure a GitHub token if the repository is private: ${url}"
+        fi
+        return 1
+    }
+
+    local filename
+    filename=$(printf '%s' "${metadata}" | jq -r '.name // empty' 2>/dev/null)
+    filename="${filename##*/}"
+
+    if [[ -z "${filename}" ]]; then
+        log_message "ERROR" "Failed to resolve GitHub asset filename for ${url}"
+        return 1
+    fi
+
     local dest_path="${dest_dir}/${filename}"
     local temp_path="${dest_path}.tmp"
 
-    mkdir -p "$dest_dir"
-    
-    if curl -fsSL --connect-timeout 30 --max-time 120 -o "${temp_path}" "${url}" 2>/dev/null; then
+    mkdir -p "${dest_dir}"
+
+    if curl -fsSL --connect-timeout 30 --max-time 300 \
+        "${download_headers[@]}" \
+        -o "${temp_path}" "${url}" 2>/dev/null; then
+        mv "${temp_path}" "${dest_path}"
+        chmod 644 "${dest_path}"
+        echo "${filename}"
+        return 0
+    fi
+
+    if [[ -z "${github_token}" ]]; then
+        log_message "ERROR" "GitHub release asset download failed. Configure a GitHub token if the repository is private: ${url}"
+    fi
+
+    rm -f "${temp_path}" 2>/dev/null
+    return 1
+}
+
+download_file() {
+    local url="$1"
+    local dest_dir="$2"
+    local filename
+    filename="$(get_url_basename "${url}")"
+    local dest_path="${dest_dir}/${filename}"
+    local temp_path="${dest_path}.tmp"
+    local github_token
+    github_token="$(get_github_token)"
+    local curl_args=(
+        -fsSL
+        --connect-timeout 30
+        --max-time 120
+        -o "${temp_path}"
+    )
+
+    if is_github_release_asset_url "${url}"; then
+        download_github_release_asset "${url}" "${dest_dir}"
+        return $?
+    fi
+
+    if is_github_url "${url}" && [[ -n "${github_token}" ]]; then
+        curl_args+=(-H "Authorization: Bearer ${github_token}")
+    fi
+
+    mkdir -p "${dest_dir}"
+
+    if curl "${curl_args[@]}" "${url}" 2>/dev/null; then
         mv "${temp_path}" "${dest_path}"
         chmod 644 "${dest_path}"
         echo "${filename}"
@@ -252,7 +362,7 @@ download_all_files() {
         return 1
     fi
     
-    source "${CONFIG_FILE}"
+    load_config
     load_urls
     
     if [[ ${#URLS[@]} -eq 0 ]]; then
@@ -270,14 +380,16 @@ download_all_files() {
     [[ "$silent_mode" != "true" ]] && echo ""
     
     for url in "${URLS[@]}"; do
-        local filename=$(basename "$url")
+        local filename
+        filename="$(get_url_basename "${url}")"
         [[ "$silent_mode" != "true" ]] && echo -n "  Downloading ${filename}... "
         
         if result=$(download_file "$url" "$DOWNLOAD_DIR"); then
+            local downloaded_name="${result:-${filename}}"
             ((success_count++))
-            success_files+=("$filename")
+            success_files+=("${downloaded_name}")
             [[ "$silent_mode" != "true" ]] && print_success "OK"
-            log_message "INFO" "Downloaded: ${filename}"
+            log_message "INFO" "Downloaded: ${downloaded_name}"
         else
             ((fail_count++))
             failed_files+=("$filename")
@@ -449,7 +561,7 @@ setup_urls() {
         fi
         if [[ "$url" =~ ^https?:// ]]; then
             URLS+=("$url")
-            print_success "Added: $(basename "$url")"
+            print_success "Added: $(get_url_basename "$url")"
         else
             print_warning "Invalid URL format, skipping: $url"
         fi
@@ -464,7 +576,7 @@ setup_urls() {
 
 setup_update_interval() {
     echo ""
-    print_info "Step 3: Configure Auto-Update Interval"
+    print_info "Step 6: Configure Auto-Update Interval"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     echo "How often should files be updated?"
@@ -495,9 +607,40 @@ setup_update_interval() {
     print_success "Update interval set to ${UPDATE_INTERVAL} hour(s)"
 }
 
+setup_github_access() {
+    echo ""
+    print_info "Step 3: Configure GitHub Access"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "Optional: add a GitHub token to download from private repositories."
+    echo "Also supports GitHub release asset API URLs like:"
+    echo "  https://api.github.com/repos/<OWNER>/<REPO>/releases/assets/<ASSET_ID>"
+    echo ""
+
+    if [[ -n "$(get_github_token)" ]]; then
+        print_success "A GitHub token is already configured"
+    else
+        print_info "No GitHub token configured. Public URLs will still work."
+    fi
+
+    read -p "Set or update GitHub token now? (y/n) [n]: " configure_github
+    configure_github="${configure_github:-n}"
+
+    if [[ "${configure_github}" =~ ^[Yy]$ ]]; then
+        read -rsp "Enter GitHub token: " GITHUB_ACCESS_TOKEN
+        echo ""
+
+        if [[ -n "${GITHUB_ACCESS_TOKEN}" ]]; then
+            print_success "GitHub token saved"
+        else
+            print_warning "Empty token entered. Saved token cleared."
+        fi
+    fi
+}
+
 setup_telegram() {
     echo ""
-    print_info "Step 4: Configure Telegram Notifications"
+    print_info "Step 5: Configure Telegram Notifications"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     
@@ -560,17 +703,20 @@ run_setup() {
     # Step 2: URLs
     setup_urls
     
-    # Step 3: Review URLs and download
+    # Step 3: GitHub access
+    setup_github_access
+
+    # Step 4: Review URLs and download
     if [[ ${#URLS[@]} -gt 0 ]]; then
         echo ""
-        print_info "Step 3: Review URLs"
+        print_info "Step 4: Review URLs"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo ""
         echo "You have added ${#URLS[@]} URL(s):"
         echo ""
         local i=1
         for url in "${URLS[@]}"; do
-            echo "  ${i}) $(basename "$url")"
+            echo "  ${i}) $(get_url_basename "$url")"
             ((i++))
         done
         echo ""
@@ -599,7 +745,7 @@ run_setup() {
                             fi
                             if [[ "$url" =~ ^https?:// ]]; then
                                 URLS+=("$url")
-                                print_success "Added: $(basename "$url")"
+                                print_success "Added: $(get_url_basename "$url")"
                             else
                                 print_warning "Invalid URL format, skipping"
                             fi
@@ -612,7 +758,7 @@ run_setup() {
                             echo ""
                             local j=1
                             for url in "${URLS[@]}"; do
-                                echo "  ${j}) $(basename "$url")"
+                                echo "  ${j}) $(get_url_basename "$url")"
                                 ((j++))
                             done
                             echo ""
@@ -642,7 +788,7 @@ run_setup() {
                     echo "Current URLs (${#URLS[@]} total):"
                     local k=1
                     for url in "${URLS[@]}"; do
-                        echo "  ${k}) $(basename "$url")"
+                        echo "  ${k}) $(get_url_basename "$url")"
                         ((k++))
                     done
                 fi
@@ -663,7 +809,7 @@ run_setup() {
         fi
     fi
     
-    # Step 4: Telegram
+    # Step 5: Telegram
     echo ""
     read -p "Do you want to configure Telegram notifications now? (y/n) [n]: " setup_tg_now
     setup_tg_now="${setup_tg_now:-n}"
@@ -678,7 +824,7 @@ run_setup() {
         print_info "Telegram notifications skipped. You can configure later from the menu."
     fi
     
-    # Step 5: Update interval
+    # Step 6: Update interval
     setup_update_interval
     
     save_config
@@ -733,7 +879,7 @@ add_url() {
     
     URLS+=("$new_url")
     save_urls
-    print_success "Added: $(basename "$new_url")"
+    print_success "Added: $(get_url_basename "$new_url")"
 }
 
 remove_url() {
@@ -748,7 +894,7 @@ remove_url() {
     echo "Current URLs:"
     local i=1
     for url in "${URLS[@]}"; do
-        echo "  ${i}) $(basename "$url")"
+        echo "  ${i}) $(get_url_basename "$url")"
         ((i++))
     done
     
@@ -764,7 +910,7 @@ remove_url() {
         unset 'URLS[$((selection-1))]'
         URLS=("${URLS[@]}")
         save_urls
-        print_success "Removed: $(basename "$removed")"
+        print_success "Removed: $(get_url_basename "$removed")"
     else
         print_error "Invalid selection"
         return 1
@@ -784,7 +930,7 @@ list_urls() {
     echo ""
     local i=1
     for url in "${URLS[@]}"; do
-        echo "  ${i}) $(basename "$url")"
+        echo "  ${i}) $(get_url_basename "$url")"
         echo "     ${url}"
         ((i++))
     done
@@ -800,6 +946,11 @@ show_status() {
     if load_config; then
         echo "  Download Directory: ${DOWNLOAD_DIR}"
         echo "  Update Interval:    ${UPDATE_INTERVAL} hour(s)"
+        if [[ -n "$(get_github_token)" ]]; then
+            echo "  GitHub Token:       configured"
+        else
+            echo "  GitHub Token:       not configured"
+        fi
         echo "  Telegram Enabled:   ${TELEGRAM_ENABLED}"
         
         load_urls
@@ -807,7 +958,10 @@ show_status() {
         
         # Show files in directory (exclude config files)
         if [[ -d "${DOWNLOAD_DIR}" ]]; then
-            local file_count=$(find "${DOWNLOAD_DIR}" -maxdepth 1 -type f \( -name "*.mrs" -o -name "*.yaml" -o -name "*.yml" -o -name "*.dat" \) 2>/dev/null | wc -l)
+            local file_count=$(find "${DOWNLOAD_DIR}" -maxdepth 1 -type f \
+                ! -name "$(basename "${CONFIG_FILE}")" \
+                ! -name "$(basename "${URLS_FILE}")" \
+                ! -name "$(basename "${LOG_FILE}")" 2>/dev/null | wc -l)
             echo "  Downloaded Files:   ${file_count}"
         fi
     else
@@ -1061,6 +1215,8 @@ show_help() {
     echo "  --status          Show current status and configuration"
     echo "  --add-url         Add a new URL to download"
     echo "  --remove-url      Remove a URL from the list"
+    echo "  --set-github-token Configure GitHub token for private repositories"
+    echo "  --clear-github-token Remove saved GitHub token"
     echo "  --list, -l        List all configured URLs"
     echo "  --test-telegram   Send a test Telegram notification"
     echo "  --enable-timer    Enable auto-update cron job"
@@ -1079,6 +1235,13 @@ show_help() {
     echo "  sudo ruleset-fetcher         # Open interactive menu"
     echo "  sudo rfetcher --update       # Force update now"
     echo "  sudo rfetcher --add-url      # Add new file URL"
+    echo "  sudo rfetcher --set-github-token"
+    echo ""
+    echo "GitHub authentication:"
+    echo "  Saved token: ${CONFIG_FILE} (GITHUB_ACCESS_TOKEN)"
+    echo "  Env override: RULESET_FETCHER_GITHUB_TOKEN / RF_GITHUB_TOKEN / GITHUB_TOKEN"
+    echo "  Private release assets support URLs like:"
+    echo "  https://api.github.com/repos/<OWNER>/<REPO>/releases/assets/<ASSET_ID>"
     echo ""
     echo "Configuration files:"
     echo "  ${CONFIG_FILE}"
@@ -1097,7 +1260,7 @@ uninstall() {
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         local download_dir=""
         if [[ -f "${CONFIG_FILE}" ]]; then
-            source "${CONFIG_FILE}"
+            load_config
             download_dir="${DOWNLOAD_DIR}"
         fi
         
@@ -1115,7 +1278,10 @@ uninstall() {
             done
             
             if [[ "${safe_to_delete}" == true ]]; then
-                local file_count=$(find "${download_dir}" -type f \( -name "*.mrs" -o -name "*.yaml" -o -name "*.yml" -o -name "*.dat" -o -name "*.txt" \) ! -name "urls.txt" 2>/dev/null | wc -l)
+                local file_count=$(find "${download_dir}" -type f \
+                    ! -name "$(basename "${CONFIG_FILE}")" \
+                    ! -name "$(basename "${URLS_FILE}")" \
+                    ! -name "$(basename "${LOG_FILE}")" 2>/dev/null | wc -l)
                 if [[ $file_count -gt 0 ]]; then
                     echo ""
                     print_info "Found ${file_count} downloaded ruleset file(s) in: ${download_dir}"
@@ -1153,6 +1319,31 @@ uninstall() {
     fi
 }
 
+set_github_token() {
+    load_config 2>/dev/null || true
+    create_config_dir
+
+    echo ""
+    read -rsp "Enter GitHub token: " GITHUB_ACCESS_TOKEN
+    echo ""
+
+    if [[ -z "${GITHUB_ACCESS_TOKEN}" ]]; then
+        print_error "No token provided"
+        return 1
+    fi
+
+    save_config
+    print_success "GitHub token saved"
+}
+
+clear_github_token() {
+    load_config 2>/dev/null || true
+    create_config_dir
+    GITHUB_ACCESS_TOKEN=""
+    save_config
+    print_success "Saved GitHub token removed"
+}
+
 main_menu() {
     while true; do
         clear
@@ -1163,12 +1354,13 @@ main_menu() {
         echo "   2. Manage URLs"
         echo "   3. Show current status"
         echo ""
-        echo "   4. Configure Telegram notifications"
-        echo "   5. Configure auto-update (cron)"
+        echo "   4. Configure GitHub access"
+        echo "   5. Configure Telegram notifications"
+        echo "   6. Configure auto-update (cron)"
         echo ""
-        echo "   6. Check for script updates"
-        echo "   7. Update script"
-        echo "   8. Uninstall"
+        echo "   7. Check for script updates"
+        echo "   8. Update script"
+        echo "   9. Uninstall"
         echo ""
         echo "   0. Exit"
         echo ""
@@ -1193,22 +1385,25 @@ main_menu() {
                 read -rp "Press Enter to continue..."
                 ;;
             4)
-                configure_telegram_menu
+                configure_github_menu
                 ;;
             5)
-                configure_timer_menu
+                configure_telegram_menu
                 ;;
             6)
+                configure_timer_menu
+                ;;
+            7)
                 check_for_updates
                 echo ""
                 read -rp "Press Enter to continue..."
                 ;;
-            7)
+            8)
                 self_update
                 echo ""
                 read -rp "Press Enter to continue..."
                 ;;
-            8)
+            9)
                 uninstall
                 if [[ ! -f "${CONFIG_FILE}" ]]; then
                     exit 0
@@ -1238,7 +1433,7 @@ manage_urls_menu() {
             echo ""
             local i=1
             for url in "${URLS[@]}"; do
-                echo "   ${i}) $(basename "$url")"
+                echo "   ${i}) $(get_url_basename "$url")"
                 ((i++))
             done
         else
@@ -1269,6 +1464,53 @@ manage_urls_menu() {
                 ;;
             3)
                 list_urls
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            0)
+                break
+                ;;
+            *)
+                print_error "Invalid option."
+                read -rp "Press Enter to continue..."
+                ;;
+        esac
+    done
+}
+
+configure_github_menu() {
+    while true; do
+        clear
+        echo -e "${GREEN}${BOLD}Configure GitHub Access${NC}"
+        echo ""
+
+        load_config 2>/dev/null || true
+        if [[ -n "$(get_github_token)" ]]; then
+            print_success "GitHub token: ${BOLD}CONFIGURED${NC}"
+        else
+            print_warning "GitHub token: ${BOLD}NOT CONFIGURED${NC}"
+        fi
+
+        echo ""
+        echo "Used for private repositories and GitHub release asset API URLs."
+        echo ""
+        echo "   1. Set or update token"
+        echo "   2. Clear saved token"
+        echo ""
+        echo "   0. Back to main menu"
+        echo ""
+
+        read -rp "${GREEN}[?]${NC} Select option: " choice
+        echo ""
+
+        case $choice in
+            1)
+                set_github_token
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            2)
+                clear_github_token
                 echo ""
                 read -rp "Press Enter to continue..."
                 ;;
@@ -1426,6 +1668,14 @@ main() {
         --remove-url)
             check_root
             remove_url
+            ;;
+        --set-github-token)
+            check_root
+            set_github_token
+            ;;
+        --clear-github-token)
+            check_root
+            clear_github_token
             ;;
         --list|-l)
             list_urls

@@ -114,7 +114,7 @@ check_root() {
 }
 
 check_dependencies() {
-    local deps=("curl" "wget" "jq" "cron")
+    local deps=("curl" "jq" "cron")
     local missing=()
     
     for dep in "${deps[@]}"; do
@@ -127,7 +127,7 @@ check_dependencies() {
         print_warning "Missing dependencies: ${missing[*]}"
         print_info "Installing dependencies..."
         apt-get update -qq
-        apt-get install -y -qq curl wget jq cron
+        apt-get install -y -qq curl jq cron
         print_success "Dependencies installed"
     else
         print_success "All dependencies are installed"
@@ -576,9 +576,6 @@ setup_urls() {
 
 setup_update_interval() {
     echo ""
-    print_info "Step 6: Configure Auto-Update Interval"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
     echo "How often should files be updated?"
     echo "  1) Every 1 hour"
     echo "  2) Every 3 hours"
@@ -599,7 +596,12 @@ setup_update_interval() {
         5) UPDATE_INTERVAL=24 ;;
         6)
             read -p "Enter custom interval in hours: " custom_interval
-            UPDATE_INTERVAL="${custom_interval:-6}"
+            if [[ "${custom_interval}" =~ ^[1-9][0-9]*$ ]]; then
+                UPDATE_INTERVAL="${custom_interval}"
+            else
+                print_warning "Invalid interval. Using default: 6 hours"
+                UPDATE_INTERVAL=6
+            fi
             ;;
         *) UPDATE_INTERVAL=6 ;;
     esac
@@ -640,10 +642,6 @@ setup_github_access() {
 
 setup_telegram() {
     echo ""
-    print_info "Step 5: Configure Telegram Notifications"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-    
     read -p "Enable Telegram notifications? (y/n) [y]: " enable_tg
     enable_tg="${enable_tg:-y}"
     
@@ -811,6 +809,9 @@ run_setup() {
     
     # Step 5: Telegram
     echo ""
+    print_info "Step 5: Configure Telegram Notifications"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
     read -p "Do you want to configure Telegram notifications now? (y/n) [n]: " setup_tg_now
     setup_tg_now="${setup_tg_now:-n}"
     
@@ -825,6 +826,9 @@ run_setup() {
     fi
     
     # Step 6: Update interval
+    echo ""
+    print_info "Step 6: Configure Auto-Update Interval"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     setup_update_interval
     
     save_config
@@ -938,8 +942,8 @@ list_urls() {
 }
 
 show_status() {
-    print_banner
-    
+    echo -e "${GREEN}${BOLD}Status${NC}"
+    echo ""
     echo "Configuration"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
@@ -1380,6 +1384,7 @@ main_menu() {
                 manage_urls_menu
                 ;;
             3)
+                clear
                 show_status
                 echo ""
                 read -rp "Press Enter to continue..."

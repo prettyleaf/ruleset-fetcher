@@ -783,45 +783,89 @@ do_setup_ghcli() {
     echo ""
 
     if ! command -v gh &>/dev/null; then
-        echo "      Install GitHub CLI first:"
+        print_warning "GitHub CLI is not installed."
         echo ""
-        echo -e "        ${CYAN}Debian / Ubuntu:${NC}"
-        echo "          sudo apt install gh"
-        echo ""
-        echo -e "        ${CYAN}Fedora / RHEL:${NC}"
-        echo "          sudo dnf install gh"
-        echo ""
-        echo -e "        ${CYAN}macOS:${NC}"
-        echo "          brew install gh"
-        echo ""
-        echo -e "        ${CYAN}Other:${NC}"
-        echo "          https://cli.github.com"
-        echo ""
-        press_enter
-    fi
+        read -rp "      Install GitHub CLI now? (y/n) [y]: " install_gh
+        install_gh="${install_gh:-y}"
 
-    if command -v gh &>/dev/null; then
-        if ! gh auth status &>/dev/null; then
-            echo "      Run this command to authenticate:"
+        if [[ "$install_gh" =~ ^[Yy]$ ]]; then
             echo ""
-            echo -e "        ${BOLD}gh auth login${NC}"
+            print_info "Installing GitHub CLI..."
             echo ""
-            echo "      Follow the prompts to complete setup."
-            echo ""
-            press_enter
-
-            if gh auth status &>/dev/null; then
-                print_success "GitHub CLI authenticated!"
+            if command -v apt-get &>/dev/null; then
+                (curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+                    | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null \
+                    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+                    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+                    | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+                    && apt-get update -qq \
+                    && apt-get install -y -qq gh) 2>&1 | tail -5
+            elif command -v dnf &>/dev/null; then
+                dnf install -y -q gh 2>&1 | tail -5
+            elif command -v brew &>/dev/null; then
+                brew install gh 2>&1 | tail -5
             else
-                print_warning "Not yet authenticated."
-                print_info "You can authenticate later with: gh auth login"
+                print_error "Could not detect package manager."
+                echo ""
+                echo "      Install manually:"
+                echo -e "        ${CYAN}https://cli.github.com${NC}"
+                echo ""
+                press_enter
+                return
+            fi
+
+            if command -v gh &>/dev/null; then
+                print_success "GitHub CLI installed!"
+            else
+                print_error "Installation failed."
+                echo ""
+                echo "      Install manually:"
+                echo -e "        ${CYAN}https://cli.github.com${NC}"
+                echo ""
+                press_enter
+                return
             fi
         else
-            print_success "GitHub CLI is already authenticated!"
+            print_info "Skipped. You can install later."
+            echo ""
+            echo "      Install commands:"
+            echo -e "        ${CYAN}Debian / Ubuntu:${NC}  sudo apt install gh"
+            echo -e "        ${CYAN}Fedora / RHEL:${NC}    sudo dnf install gh"
+            echo -e "        ${CYAN}macOS:${NC}            brew install gh"
+            echo -e "        ${CYAN}Other:${NC}            https://cli.github.com"
+            echo ""
+            press_enter
+            return
+        fi
+    fi
+
+    if gh auth status &>/dev/null; then
+        print_success "GitHub CLI is already authenticated!"
+        return
+    fi
+
+    echo ""
+    read -rp "      Start authentication now? (y/n) [y]: " do_auth
+    do_auth="${do_auth:-y}"
+
+    if [[ "$do_auth" =~ ^[Yy]$ ]]; then
+        echo ""
+        echo "      Run this command to authenticate:"
+        echo ""
+        echo -e "        ${BOLD}gh auth login${NC}"
+        echo ""
+        echo "      Follow the prompts to complete setup."
+        echo ""
+        press_enter
+
+        if gh auth status &>/dev/null; then
+            print_success "GitHub CLI authenticated!"
+        else
+            print_warning "Not yet authenticated."
+            print_info "You can authenticate later with: gh auth login"
         fi
     else
-        print_warning "GitHub CLI is not installed."
-        print_info "Install it and run 'gh auth login' later."
+        print_info "Skipped. Authenticate later with: gh auth login"
     fi
 }
 

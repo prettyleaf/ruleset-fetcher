@@ -262,6 +262,15 @@ load_urls() {
     fi
 }
 
+normalize_github_url() {
+    local url="$1"
+    if [[ "$url" =~ ^https://github\.com/([^/]+)/([^/]+)/blob/(.+)$ ]]; then
+        echo "https://raw.githubusercontent.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/${BASH_REMATCH[3]}"
+        return
+    fi
+    echo "$url"
+}
+
 get_url_basename() {
     local url="${1%%\?*}"
     basename "${url}"
@@ -682,6 +691,7 @@ setup_urls() {
             break
         fi
         if [[ "$url" =~ ^https?:// ]]; then
+            url=$(normalize_github_url "$url")
             URLS+=("$url")
             print_success "Added: $(get_url_basename "$url")"
         else
@@ -1087,6 +1097,7 @@ run_setup() {
                                 break
                             fi
                             if [[ "$url" =~ ^https?:// ]]; then
+                                url=$(normalize_github_url "$url")
                                 URLS+=("$url")
                                 print_success "Added: $(get_url_basename "$url")"
                             else
@@ -1227,6 +1238,8 @@ add_url() {
         print_error "Invalid URL format"
         return 1
     fi
+
+    new_url=$(normalize_github_url "$new_url")
 
     for url in "${URLS[@]}"; do
         if [[ "$url" == "$new_url" ]]; then

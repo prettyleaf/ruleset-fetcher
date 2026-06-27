@@ -7,13 +7,7 @@ An interactive script that fetches rule-set files for [mihomo](https://github.co
 ## Quick Start
 
 ```bash
-wget https://raw.githubusercontent.com/prettyleaf/ruleset-fetcher/main/ruleset-fetcher.sh
-chmod +x ruleset-fetcher.sh
-sudo ./ruleset-fetcher.sh
-```
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/prettyleaf/ruleset-fetcher/main/ruleset-fetcher.sh -o /tmp/ruleset-fetcher.sh && sudo bash /tmp/ruleset-fetcher.sh
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/prettyleaf/ruleset-fetcher/main/ruleset-fetcher.sh)" -- --setup
 ```
 
 After installation, you can use either command from anywhere:
@@ -34,33 +28,33 @@ ruleset-fetcher
 
 The setup wizard guides you through:
 
-1. **Download Directory** - Where to save rule-set files (default: `/opt/ruleset-fetcher`)
-2. **URLs** - Add multiple URLs to download
-3. **GitHub Access** - Optional token for private repositories and release assets
+1. **GitHub Authentication** - SSH key or GitHub CLI for private repositories
+2. **Download Directory** - Where to save rule-set files (default: `/opt/ruleset-fetcher`)
+3. **URLs** - Add multiple URLs to download
 4. **Review & Download** - Confirm URLs and optionally download immediately
 5. **Telegram Notifications** - Optional alerts for updates
 6. **Update Interval** - How often to auto-update (via cron)
 
-### Private GitHub Releases
+### Private GitHub Repositories
 
-For private repositories, save a GitHub token and add the GitHub release asset API URL to `urls.txt` or through the interactive menu:
+For private repositories, authenticate via **GitHub CLI** (recommended) or **SSH key**:
 
 ```bash
-sudo rfetcher --set-github-token
+# GitHub CLI
+gh auth login
+
+# SSH key
+ssh-keygen -t ed25519
+# Add public key at https://github.com/settings/ssh/new
 ```
 
-Example URL:
+The script auto-detects your authentication method. For release asset API URLs:
 
 ```text
 https://api.github.com/repos/<OWNER>/<REPO>/releases/assets/<ASSET_ID>
 ```
 
-The script automatically sends:
-
-- `Authorization: Bearer <token>`
-- `Accept: application/octet-stream`
-
-You can also override the saved token with one of these environment variables:
+You can also use environment variables for CI/CD:
 
 - `RULESET_FETCHER_GITHUB_TOKEN`
 - `RF_GITHUB_TOKEN`
@@ -75,8 +69,6 @@ You can also override the saved token with one of these environment variables:
 | `--status` | Show current status and configuration |
 | `--add-url` | Add a new URL to download |
 | `--remove-url` | Remove a URL from the list |
-| `--set-github-token` | Save GitHub token for private repositories |
-| `--clear-github-token` | Remove saved GitHub token |
 | `--list`, `-l` | List all configured URLs |
 | `--test-telegram` | Send a test Telegram notification |
 | `--enable-timer` | Enable auto-update cron job |

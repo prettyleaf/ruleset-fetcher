@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="26.2.0"
+VERSION="26.2.2"
 GITHUB_REPO="prettyleaf/ruleset-fetcher"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main/ruleset-fetcher.sh"
 
@@ -792,18 +792,20 @@ do_setup_ghcli() {
             echo ""
             print_info "Installing GitHub CLI..."
             echo ""
+            local install_ok=false
             if command -v apt-get &>/dev/null; then
-                (curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+                curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
                     | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null \
                     && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
                     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
                     | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
                     && apt-get update -qq \
-                    && apt-get install -y -qq gh) 2>&1 | tail -5
+                    && apt-get install -y -qq gh \
+                    && install_ok=true
             elif command -v dnf &>/dev/null; then
-                dnf install -y -q gh 2>&1 | tail -5
+                dnf install -y -q gh && install_ok=true
             elif command -v brew &>/dev/null; then
-                brew install gh 2>&1 | tail -5
+                brew install gh && install_ok=true
             else
                 print_error "Could not detect package manager."
                 echo ""
@@ -814,7 +816,8 @@ do_setup_ghcli() {
                 return
             fi
 
-            if command -v gh &>/dev/null; then
+            hash -r
+            if $install_ok && command -v gh &>/dev/null; then
                 print_success "GitHub CLI installed!"
             else
                 print_error "Installation failed."
@@ -850,19 +853,15 @@ do_setup_ghcli() {
 
     if [[ "$do_auth" =~ ^[Yy]$ ]]; then
         echo ""
-        echo "      Run this command to authenticate:"
-        echo ""
-        echo -e "        ${BOLD}gh auth login${NC}"
-        echo ""
-        echo "      Follow the prompts to complete setup."
-        echo ""
-        press_enter
+        gh auth login
 
         if gh auth status &>/dev/null; then
+            echo ""
             print_success "GitHub CLI authenticated!"
         else
-            print_warning "Not yet authenticated."
-            print_info "You can authenticate later with: gh auth login"
+            echo ""
+            print_warning "Authentication was not completed."
+            print_info "You can try again later with: gh auth login"
         fi
     else
         print_info "Skipped. Authenticate later with: gh auth login"

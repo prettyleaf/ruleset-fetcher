@@ -37,9 +37,9 @@ setup_symlink() {
     local installed_script="${CONFIG_DIR}/ruleset-fetcher.sh"
 
     # Copy script + lib to config dir
-    if [[ "$(readlink -f "$0")" != "$(readlink -f "${installed_script}" 2>/dev/null)" ]]; then
+    if [[ -n "${SCRIPT_REAL_PATH}" ]] && [[ "${SCRIPT_REAL_PATH}" != "$(readlink -f "${installed_script}" 2>/dev/null)" ]]; then
         mkdir -p "${CONFIG_DIR}"
-        cp "$(readlink -f "$0")" "${installed_script}"
+        cp "${SCRIPT_REAL_PATH}" "${installed_script}"
         chmod +x "${installed_script}"
         install_lib_files
     fi

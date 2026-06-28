@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="26.2.6"
+VERSION="26.2.7"
 GITHUB_REPO="prettyleaf/ruleset-fetcher"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main/ruleset-fetcher.sh"
 

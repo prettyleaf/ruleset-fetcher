@@ -2,7 +2,7 @@
 
 VERSION="26.2.10"
 GITHUB_REPO="prettyleaf/ruleset-fetcher"
-GITHUB_BRANCH="dev"
+GITHUB_BRANCH="main"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main/ruleset-fetcher.sh"
 
 CONFIG_DIR="/opt/ruleset-fetcher"

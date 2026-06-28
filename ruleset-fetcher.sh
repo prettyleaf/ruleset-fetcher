@@ -1,7 +1,8 @@
 #!/bin/bash
 
-VERSION="26.2.7"
+VERSION="26.2.10"
 GITHUB_REPO="prettyleaf/ruleset-fetcher"
+GITHUB_BRANCH="dev"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main/ruleset-fetcher.sh"
 
 CONFIG_DIR="/opt/ruleset-fetcher"
@@ -21,18 +22,33 @@ GITHUB_AUTH_METHOD=""
 
 RF_MODULES=(ui config auth download telegram cron update setup menus)
 
-SCRIPT_REAL_PATH="$(readlink -f "$0")"
-SCRIPT_DIR="$(dirname "${SCRIPT_REAL_PATH}")"
+# Resolve script location (fails gracefully in bash -c / pipe context)
+SCRIPT_REAL_PATH=""
+SCRIPT_DIR=""
+if [[ -n "${0:-}" ]] && [[ -f "$0" ]]; then
+    _rf_self="$(readlink -f -- "$0" 2>/dev/null)" || _rf_self=""
+    if [[ -n "${_rf_self}" ]] && grep -q 'RF_MODULES=' "${_rf_self}" 2>/dev/null; then
+        SCRIPT_REAL_PATH="${_rf_self}"
+        SCRIPT_DIR="$(dirname "${SCRIPT_REAL_PATH}")"
+    fi
+    unset _rf_self
+fi
 
-if [[ -d "${SCRIPT_DIR}/lib" ]]; then
+# Find or bootstrap module library
+if [[ -n "${SCRIPT_DIR}" ]] && [[ -d "${SCRIPT_DIR}/lib" ]]; then
     LIB_DIR="${SCRIPT_DIR}/lib"
-elif [[ -d "${CONFIG_DIR}/lib" ]]; then
+elif ls "${CONFIG_DIR}/lib/"*.sh &>/dev/null; then
     LIB_DIR="${CONFIG_DIR}/lib"
 else
-    # Bootstrap: download modules on first run after update from single-file version
     echo "Downloading modules..." >&2
     mkdir -p "${CONFIG_DIR}/lib"
+
     _rf_ref="v${VERSION}"
+    _rf_probe="https://raw.githubusercontent.com/${GITHUB_REPO}/${_rf_ref}/lib/ui.sh"
+    if ! curl -fsSL --connect-timeout 5 --max-time 10 -o /dev/null "${_rf_probe}" 2>/dev/null; then
+        _rf_ref="${GITHUB_BRANCH}"
+    fi
+
     for _rf_mod in "${RF_MODULES[@]}"; do
         _rf_url="https://raw.githubusercontent.com/${GITHUB_REPO}/${_rf_ref}/lib/${_rf_mod}.sh"
         if ! curl -fsSL --connect-timeout 30 --max-time 60 -o "${CONFIG_DIR}/lib/${_rf_mod}.sh" "${_rf_url}" 2>/dev/null; then
@@ -41,7 +57,17 @@ else
             exit 1
         fi
     done
-    unset _rf_ref _rf_mod _rf_url
+
+    if [[ -z "${SCRIPT_REAL_PATH}" ]]; then
+        _rf_main_url="https://raw.githubusercontent.com/${GITHUB_REPO}/${_rf_ref}/ruleset-fetcher.sh"
+        if curl -fsSL --connect-timeout 30 --max-time 60 -o "${CONFIG_DIR}/ruleset-fetcher.sh" "${_rf_main_url}" 2>/dev/null; then
+            chmod +x "${CONFIG_DIR}/ruleset-fetcher.sh"
+            SCRIPT_REAL_PATH="${CONFIG_DIR}/ruleset-fetcher.sh"
+            SCRIPT_DIR="${CONFIG_DIR}"
+        fi
+    fi
+
+    unset _rf_ref _rf_mod _rf_url _rf_probe _rf_main_url
     LIB_DIR="${CONFIG_DIR}/lib"
 fi
 

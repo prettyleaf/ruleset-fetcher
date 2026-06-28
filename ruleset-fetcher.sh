@@ -1,7 +1,8 @@
 #!/bin/bash
 
-VERSION="26.2.4"
+VERSION="26.2.10"
 GITHUB_REPO="prettyleaf/ruleset-fetcher"
+GITHUB_BRANCH="dev"
 GITHUB_RAW_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main/ruleset-fetcher.sh"
 
 CONFIG_DIR="/opt/ruleset-fetcher"
@@ -41,125 +42,54 @@ else
     BOLD=""
 fi
 
-MENU_WIDTH=62
-MENU_LINE=$(printf '%*s' "$MENU_WIDTH" '' | tr ' ' '_')
-
-menu_header() {
-    local title="$1"
-    local subtitle="${2:-}"
-    [[ -t 0 && -z "${RF_NO_CLEAR:-}" ]] && clear
-    echo ""
-    echo "${MENU_LINE}"
-    echo ""
-    local pad=$(( (MENU_WIDTH - ${#title}) / 2 ))
-    [[ $pad -lt 0 ]] && pad=0
-    printf '%*s' "$pad" ''
-    echo -e "${BOLD}${title}${NC}"
-    if [[ -n "$subtitle" ]]; then
-        local sub_pad=$(( (MENU_WIDTH - ${#subtitle}) / 2 ))
-        [[ $sub_pad -lt 0 ]] && sub_pad=0
-        printf '%*s' "$sub_pad" ''
-        echo -e "${LIGHT_GRAY}${subtitle}${NC}"
+# Resolve script location (fails gracefully in bash -c / pipe context)
+SCRIPT_REAL_PATH=""
+SCRIPT_DIR=""
+if [[ -n "${0:-}" ]] && [[ -f "$0" ]]; then
+    _rf_self="$(readlink -f -- "$0" 2>/dev/null)" || _rf_self=""
+    if [[ -n "${_rf_self}" ]] && grep -q 'RF_MODULES=' "${_rf_self}" 2>/dev/null; then
+        SCRIPT_REAL_PATH="${_rf_self}"
+        SCRIPT_DIR="$(dirname "${SCRIPT_REAL_PATH}")"
     fi
-    echo ""
-    echo "${MENU_LINE}"
-}
+    unset _rf_self
+fi
 
-menu_footer() {
-    echo ""
-    echo "${MENU_LINE}"
-    echo ""
-}
+# Find or bootstrap module library
+if [[ -n "${SCRIPT_DIR}" ]] && [[ -d "${SCRIPT_DIR}/lib" ]]; then
+    LIB_DIR="${SCRIPT_DIR}/lib"
+elif ls "${CONFIG_DIR}/lib/"*.sh &>/dev/null; then
+    LIB_DIR="${CONFIG_DIR}/lib"
+else
+    echo "Downloading modules..." >&2
+    mkdir -p "${CONFIG_DIR}/lib"
 
-menu_item() {
-    local key="$1"
-    local label="$2"
-    echo -e "      ${GREEN}[${key}]${NC}  ${label}"
-}
-
-press_enter() {
-    echo ""
-    read -rp "      Press Enter to continue..."
-}
-
-print_banner() {
-    echo -e "${CYAN}"
-    echo '            _                _      __      _       _               '
-    echo ' _ __ _   _| | ___  ___  ___| |_   / _| ___| |_ ___| |__   ___ _ __ '
-    echo '| '\''__| | | | |/ _ \/ __|/ _ \ __| | |_ / _ \ __/ __| '\''_ \ / _ \ '\''__|'
-    echo '| |  | |_| | |  __/\__ \  __/ |_  |  _|  __/ || (__| | | |  __/ |   '
-    echo '|_|   \__,_|_|\___||___/\___|\__| |_|  \___|\__\___|_| |_|\___|_|   '
-    echo -e "${NC}"
-    echo -e "                                              ${BLUE}v${VERSION}${NC}"
-    echo ""
-}
-
-setup_symlink() {
-    if [[ "$EUID" -ne 0 ]]; then
-        return 1
+    _rf_ref="v${VERSION}"
+    _rf_probe="https://raw.githubusercontent.com/${GITHUB_REPO}/${_rf_ref}/lib/ui.sh"
+    if ! curl -fsSL --connect-timeout 5 --max-time 10 -o /dev/null "${_rf_probe}" 2>/dev/null; then
+        _rf_ref="${GITHUB_BRANCH}"
     fi
 
-    if [[ -L "$SCRIPT_PATH" && "$(readlink -f "$SCRIPT_PATH")" == "$(readlink -f "$0")" ]]; then
-        :
-    elif [[ -d "$(dirname "$SCRIPT_PATH")" ]]; then
-        rm -f "$SCRIPT_PATH"
-        if [[ "$(readlink -f "$0")" != "${SCRIPT_PATH}" ]]; then
-            cp "$(readlink -f "$0")" "${SCRIPT_PATH}"
-            chmod +x "${SCRIPT_PATH}"
-        fi
-    fi
-
-    if [[ -L "$SYMLINK_PATH" && "$(readlink -f "$SYMLINK_PATH")" == "$SCRIPT_PATH" ]]; then
-        :
-    elif [[ -d "$(dirname "$SYMLINK_PATH")" ]]; then
-        rm -f "$SYMLINK_PATH"
-        if ln -s "$SCRIPT_PATH" "$SYMLINK_PATH" 2>/dev/null; then
-            :
-        fi
-    fi
-
-    return 0
-}
-
-log_message() {
-    local level="$1"
-    local message="$2"
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "[${timestamp}] [${level}] ${message}" >> "${LOG_FILE}"
-}
-
-print_success() {
-    echo -e "      ${GREEN}✓ $1${NC}"
-}
-
-print_error() {
-    echo -e "      ${RED}✗ $1${NC}"
-}
-
-print_warning() {
-    echo -e "      ${YELLOW}⚠ $1${NC}"
-}
-
-print_info() {
-    echo -e "      ${BLUE}ℹ $1${NC}"
-}
-
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        print_error "This script must be run as root (use sudo)"
-        exit 1
-    fi
-}
-
-check_dependencies() {
-    local deps=("curl" "jq" "cron" "git")
-    local missing=()
-
-    for dep in "${deps[@]}"; do
-        if ! command -v "$dep" &> /dev/null; then
-            missing+=("$dep")
+    for _rf_mod in "${RF_MODULES[@]}"; do
+        _rf_url="https://raw.githubusercontent.com/${GITHUB_REPO}/${_rf_ref}/lib/${_rf_mod}.sh"
+        if ! curl -fsSL --connect-timeout 30 --max-time 60 -o "${CONFIG_DIR}/lib/${_rf_mod}.sh" "${_rf_url}" 2>/dev/null; then
+            echo "Error: Failed to download ${_rf_mod}.sh from ${_rf_url}" >&2
+            echo "Try re-running: sudo ruleset-fetcher --setup" >&2
+            exit 1
         fi
     done
+
+    if [[ -z "${SCRIPT_REAL_PATH}" ]]; then
+        _rf_main_url="https://raw.githubusercontent.com/${GITHUB_REPO}/${_rf_ref}/ruleset-fetcher.sh"
+        if curl -fsSL --connect-timeout 30 --max-time 60 -o "${CONFIG_DIR}/ruleset-fetcher.sh" "${_rf_main_url}" 2>/dev/null; then
+            chmod +x "${CONFIG_DIR}/ruleset-fetcher.sh"
+            SCRIPT_REAL_PATH="${CONFIG_DIR}/ruleset-fetcher.sh"
+            SCRIPT_DIR="${CONFIG_DIR}"
+        fi
+    fi
+
+    unset _rf_ref _rf_mod _rf_url _rf_probe _rf_main_url
+    LIB_DIR="${CONFIG_DIR}/lib"
+fi
 
     if [[ ${#missing[@]} -gt 0 ]]; then
         print_warning "Missing dependencies: ${missing[*]}"
